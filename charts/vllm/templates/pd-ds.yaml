@@ -90,6 +90,20 @@ spec:
        requests onto pods that serve nothing. Shape I (size=1 groups)
        never noticed because there every pod IS its own group's leader. */}}
 {{- range $s := until $slices }}
+{{- /* Per-slice router/backend derivation. pd.router.backend is an explicit
+       override for deliberate engine/router mismatch (the chart owner takes
+       responsibility); empty means follow pd.transferBackend. */ -}}
+{{- $backend := $pd.router.backend | default "" }}
+{{- if eq $backend "" }}{{ $backend = $pd.transferBackend | default "nixl" }}{{ end }}
+{{- /* Mooncake router argv deltas; empty strings on the nixl path render
+       nothing and keep the existing argv byte-identical. The bootstrap
+       port (8998) is vLLM's engine-side default and the value vllm-router
+       unconditionally uses when --prefill URL omits a port
+       (router/src/routers/http/vllm_pd_router.rs); if an operator
+       overrides VLLM_MOONCAKE_BOOTSTRAP_PORT via env they own the
+       matching router argv too. See values.schema.json#definitions.
+       pdRole.mooncake for the schema-side mapping. */ -}}
+{{- $prefillPortSuffix := ternary " 8998" "" (eq $backend "mooncake") }}
 ---
 apiVersion: v1
 kind: Service
@@ -131,10 +145,16 @@ spec:
 # repeated --prefill / --decode flags, so the router sees every group leader
 # of THIS slice. One router per slice is the PD unit's front door. The
 # vllm-router is the Rust binary (separate image from the engine). Its
-# --vllm-pd-disaggregation selects the PD path; --prefill URL is single-arg
-# (unlike sglang's two-arg `--prefill URL PORT` -- the vllm router reads the
-# engine's own NIXL handshake address from the engine directly, so there is
-# no bootstrap port to pass through).
+# --vllm-pd-disaggregation selects the PD path; the per-slice $backend decides
+# which side channel the router uses to learn each prefill's engine_id:
+#   - nixl     : the router reads each engine's NIXL handshake from the engine
+#                itself; --prefill URL is single-arg, no extra flag.
+#   - mooncake : the engine answers the router on its own uvicorn bootstrap
+#                port (vLLM default 8998, NOT chart-set; an operator
+#                overriding it via vllm env also owns the matching router
+#                argv). Each --prefill URL then takes a trailing port arg and
+#                --kv-connector mooncake is what turns on the router-side
+#                kv_transfer_params injection.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -167,10 +187,23 @@ spec:
           set -e
           # Resolve this slice's headless Services into a list of group-leader
           # IPs, then build repeated --prefill / --decode flags. getent prints
-          # one line per backing pod for a headless Service. There is no
-          # bootstrap port to propagate (unlike sglang): the vllm-router
-          # fetches each engine's NIXL handshake address from the engine and
-          # hands it to the peer in kv_transfer_params.
+          # one line per backing pod for a headless Service. The two backend
+          # flavours of argv differ by side channel:
+          #   - nixl     : no bootstrap port to propagate, no extra router
+          #                flag -- the router fetches each engine's NIXL
+          #                handshake address from the engine itself and hands
+          #                it to the peer in kv_transfer_params.
+          #   - mooncake : the engine spawns its own uvicorn responder on
+          #                VLLM_MOONCAKE_BOOTSTRAP_PORT (vLLM-side default
+          #                8998, intentionally NOT chart-set -- an operator
+          #                overriding it via engine env owns the matching
+          #                router argv too). Each --prefill URL takes a
+          #                trailing port arg, and --kv-connector mooncake is
+          #                what tells the router to inject
+          #                kv_transfer_params (remote_bootstrap_addr +
+          #                remote_engine_id) into each request so the
+          #                receiving engine can KV-recv from prefill on
+          #                demand.
           PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
           DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
           for i in $(seq 1 60); do
@@ -185,7 +218,7 @@ spec:
             exit 1
           fi
           PF_ARGS=""
-          for ip in $PF_IPS; do PF_ARGS="$PF_ARGS --prefill http://$ip:{{ $pd.prefill.httpPort | default 8001 }}"; done
+          for ip in $PF_IPS; do PF_ARGS="$PF_ARGS --prefill http://$ip:{{ $pd.prefill.httpPort | default 8001 }}{{ $prefillPortSuffix }}"; done
           DC_ARGS=""
           for ip in $DC_IPS; do DC_ARGS="$DC_ARGS --decode http://$ip:{{ $pd.decode.httpPort | default 8002 }}"; done
           echo "router: prefill$PF_ARGS"
@@ -196,7 +229,8 @@ spec:
             $PF_ARGS $DC_ARGS \
             --policy {{ $pd.router.policy | default "round_robin" }} \
             --host 0.0.0.0 \
-            --port {{ $root.Values.service.port }}
+            --port {{ $root.Values.service.port }}{{ if eq $backend "mooncake" }} \
+            --kv-connector mooncake{{ end }}
         ports:
         - { containerPort: {{ $root.Values.service.port }}, name: http }
         {{- /* Router readiness gates on its engines, not its own listen port:

@@ -164,7 +164,15 @@ lws:
 pd:
   enabled: false
   colocate: false
-  transferBackend: nixl          # only nixl today (NixlConnector)
+  # Which kv_connector goes into the engine's --kv-transfer-config.
+  #   nixl     = NixlConnector. Needs the model's KV grouping to pad
+  #              per-layer; GLM-5.3-NVFP4 + PP>1 breaks its region assert.
+  #   mooncake = MooncakeConnector. Per-request p2p, no region table -- the
+  #              only peer-to-peer connector that reaches 1M ctx on that
+  #              fleet. Router-side tuning is auto-driven from this value;
+  #              override pd.router.backend only for deliberate engine/
+  #              router mismatch.
+  transferBackend: nixl
 
   # The two roles. A/B roles render one leaderWorkerTemplate each; colocate
   # renders one CONTAINER each inside the merged pod (and ignores everything
@@ -221,6 +229,33 @@ pd:
       # validated for colocate; "UCX,GDS" was validated for the cross-node
       # DS shapes. Render the JSON array only; the chart picks the key.
       backends: ["UCX", "GDS"]
+    # MooncakeConnector parameters -- consulted only when pd.transferBackend
+    # is "mooncake". The chart writes these into kv_connector_extra_config
+    # on --kv-transfer-config. Chart values stay camelCase; the wire JSON
+    # keys the connector reads are snake_case. See values.schema.json for
+    # the exact key map. Defaults match the connector's own, so unset
+    # produces the same engine behaviour as a user-set default. (Exception:
+    # httpPort is currently NOT read by the connector at vllm 0.30 -- see
+    # the per-field comment for why we still emit it.)
+    mooncake:
+      # Wire key: http_port. NOT read by MooncakeConnector at vllm 0.30
+      # (the connector ignores it; only moriio_connector.py uses this key
+      # at that tag). Kept so the kv_connector_extra_config body stays
+      # shape-compatible with the nixl path, and harmless because the
+      # connector silently drops unknown keys. Defaults mirror the nixl
+      # pair so values stay pairwise distinct across prefill/decode if a
+      # future connector release starts reading it.
+      httpPort: 5597
+      # Wire key: mooncake_protocol. Validated against the rdma path; tcp
+      # exists for fallback networks where IB is unavailable.
+      protocol: rdma
+      # Wire key: device_name. Empty means let the connector auto-pick the
+      # RDMA NIC.
+      deviceName: ""
+      # Wire key: num_workers. Matches the connector's engine-side
+      # default so unset and user-set produce the same wire JSON. Lower
+      # this only if you know the engine is over-threaded for KV sends.
+      numSenderWorkers: 10
     extraArgs: []
     affinityReplace: null
     schedulerName: ""
@@ -234,6 +269,13 @@ pd:
       sideChannelPort: 5562
       httpPort: 5598
       backends: ["UCX", "GDS"]
+    # See pd.prefill.mooncake above for the doc -- same knobs, distinct
+    # httpPort default to keep the colocate netns collision-free.
+    mooncake:
+      httpPort: 5598
+      protocol: rdma
+      deviceName: ""
+      numSenderWorkers: 10
     extraArgs: []
     affinityReplace: null
     schedulerName: ""
@@ -246,6 +288,10 @@ pd:
     # Forwarded verbatim as --policy. The Rust vllm-router accepts
     # round_robin today; there is no cache_aware.
     policy: round_robin
+    # Empty (default) means follow pd.transferBackend. Set explicitly only
+    # to deliberately mix engine and router connectors -- the chart owner
+    # takes responsibility for the combination.
+    backend: ""
     # The Rust vllm-router is a SEPARATE image from the vllm-openai engine
     # image (unlike sglang, where the same image carries sglang_router). The
     # default below is a real published image. Set repository/tag to mirror
