@@ -71,6 +71,33 @@
             }
           }
         },
+        "mooncake": {
+          "description": "MooncakeConnector parameters, consulted only when pd.transferBackend=mooncake. The chart writes them into kv_connector_extra_config on the engine's --kv-transfer-config. Chart values are camelCase; the wire JSON keys the connector actually reads are snake_case, and the connector does NOT do strict key validation -- a misspelled key is silently dropped and the engine falls back to its own default. Chart-to-connector key map: httpPort -> http_port, protocol -> mooncake_protocol, deviceName -> device_name, numSenderWorkers -> num_workers.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "httpPort": {
+              "description": "The connector's HTTP health-probe endpoint inside the engine (NOT the mooncake bootstrap side-channel the router dials). Wire key: http_port. Engine default: unused by the chart because we always pass a number; per-role defaults come from pd.<role>.nixl.httpPort to keep ports pairwise distinct across prefill/decode.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "protocol": {
+              "description": "Wire key: mooncake_protocol. Engine default when unset: rdma.",
+              "type": "string",
+              "enum": ["rdma", "tcp"]
+            },
+            "deviceName": {
+              "description": "Wire key: device_name. RDMA NIC the transfer engine binds to; empty string means auto-pick. Only meaningful when protocol=rdma.",
+              "type": "string"
+            },
+            "numSenderWorkers": {
+              "description": "Wire key: num_workers. Engine default when unset: 10. The chart passes 10 (matching the engine) so user-set 10 and unset-10 produce the same wire JSON.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
         "extraArgs": {
           "description": "Appended after the top-level extraArgs for this role's engines; a repeated flag's last occurrence wins, so role flags override shared ones by construction.",
           "type": "array",
@@ -146,7 +173,11 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "colocate": { "type": "boolean" },
-        "transferBackend": { "type": "string", "enum": ["nixl"] },
+        "transferBackend": {
+          "description": "Which kv_connector gets written into --kv-transfer-config. nixl = NixlConnector (peer bootstrap through vLLM's built-in nixl handshake); mooncake = MooncakeConnector (per-request p2p through the engine's own uvicorn responder, no region table). The mooncake path exists because NixlConnector's kv-region assertion breaks whenever the model's KV grouping doesn't pad per-layer and pipeline_parallel_size > 1; mooncake has no region table and so doesn't trip that assert.",
+          "type": "string",
+          "enum": ["nixl", "mooncake"]
+        },
         "prefill": { "$ref": "#/definitions/pdRole" },
         "decode": { "$ref": "#/definitions/pdRole" },
         "router": {
@@ -155,6 +186,11 @@
           "properties": {
             "replicas": { "type": "integer", "minimum": 1, "maximum": 2 },
             "policy": { "type": "string", "minLength": 1 },
+            "backend": {
+              "description": "Which --kv-connector value the router sets, and whether the trailing mooncake bootstrap port is appended to each --prefill URL. Empty (default) means follow pd.transferBackend. Set explicitly only to deliberately mix engine and router connectors (e.g. an experimental engine backend that uses the nixl router pairing) -- the chart owner takes responsibility for the combination.",
+              "type": "string",
+              "enum": ["", "nixl", "mooncake"]
+            },
             "imageOverride": {
               "type": "object",
               "additionalProperties": false,

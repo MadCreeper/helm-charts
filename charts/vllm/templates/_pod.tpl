@@ -173,16 +173,39 @@
 {{- end }}
 {{- end }}
 {{- if $pdRole }}
-{{- /* The NixlConnector wiring every pd engine carries. kv_role is "kv_both"
+{{- /* The connector wiring every pd engine carries. kv_role is "kv_both"
        on both engines -- vLLM 0.24 has deprecated producer/consumer-split
        roles, and kv_both works symmetrically in both directions. The role
        (prefill vs decode) is implicit: it is whichever side the router pairs
        on a given request, not a flag the engine reads. The JSON is chart-
-       derived from pd.<role>.nixl.* and goes into the flag list BEFORE any
-       user extraArgs, so a user's own --kv-transfer-config (e.g. for an
+       derived from pd.<role>.<backend>.* and goes into the flag list BEFORE
+       any user extraArgs, so a user's own --kv-transfer-config (e.g. for an
        L2-cache multi-connector config) can override it last-wins. */}}
+{{- $backend := $root.Values.pd.transferBackend | default "nixl" }}
+{{- $kvCfg := "" }}
+{{- if eq $backend "mooncake" }}
+{{- /* MooncakeConnector.__init__ reads snake_case keys out of
+       kv_connector_extra_config and drops unknown keys silently -- no
+       validation. The four wire keys are http_port, mooncake_protocol,
+       device_name, num_workers. Chart values stay camelCase (see
+       values.schema.json#definitions.pdRole.mooncake) so the template
+       keeps the chart/wire rename in one place. Connector defaults
+       (mooncake_connector.py:950-970): protocol="rdma", num_workers=10,
+       device_name="". Match them below so an unset value on the chart
+       produces the same engine behaviour as a user-set default; this
+       matters because the mooncake gotcha was the engine silently
+       running on defaults while looking tuned. */}}
+{{- $mc := $pobj.mooncake | default dict }}
+{{- $mcExtra := dict
+      "http_port"         ($mc.httpPort         | default $nixlHttpPort)
+      "mooncake_protocol" ($mc.protocol         | default "rdma")
+      "num_workers"       ($mc.numSenderWorkers | default 10) }}
+{{- with $mc.deviceName }}{{ $mcExtra = set $mcExtra "device_name" . }}{{ end }}
+{{- $kvCfg = printf `{"kv_connector":"MooncakeConnector","kv_role":"kv_both","kv_connector_extra_config":%s}` ($mcExtra | mustToJson) }}
+{{- else }}
 {{- $backendsJson := "[" }}{{ range $i, $b := $nixlBackends }}{{ if $i }}{{ $backendsJson = printf "%s," $backendsJson }}{{ end }}{{ $backendsJson = printf "%s%q" $backendsJson $b }}{{ end }}{{ $backendsJson = printf "%s]" $backendsJson }}
-{{- $kvCfg := printf `{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"backends":%s,"http_port":%d}}` $backendsJson $nixlHttpPort }}
+{{- $kvCfg = printf `{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"backends":%s,"http_port":%d}}` $backendsJson $nixlHttpPort }}
+{{- end }}
 {{- $flags = append $flags (printf "--kv-transfer-config=%s" $kvCfg) }}
 {{- end }}
 {{- /* toString, so a YAML-typed entry (`- 2` under `- --tensor-parallel-size`)
