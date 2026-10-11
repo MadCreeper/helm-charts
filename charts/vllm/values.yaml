@@ -234,12 +234,17 @@ pd:
     # on --kv-transfer-config. Chart values stay camelCase; the wire JSON
     # keys the connector reads are snake_case. See values.schema.json for
     # the exact key map. Defaults match the connector's own, so unset
-    # produces the same engine behaviour as a user-set default.
+    # produces the same engine behaviour as a user-set default. (Exception:
+    # httpPort is currently NOT read by the connector at vllm 0.30 -- see
+    # the per-field comment for why we still emit it.)
     mooncake:
-      # kv_connector_extra_config.http_port -- this engine's connector-side
-      # HTTP health probe (NOT the bootstrap port the router dials). The
-      # default pairs prefill/decode with the nixl httpPort pair so colocate
-      # netns keeps them distinct without any extra chart-side bookkeeping.
+      # Wire key: http_port. NOT read by MooncakeConnector at vllm 0.30
+      # (the connector ignores it; only moriio_connector.py uses this key
+      # at that tag). Kept so the kv_connector_extra_config body stays
+      # shape-compatible with the nixl path, and harmless because the
+      # connector silently drops unknown keys. Defaults mirror the nixl
+      # pair so values stay pairwise distinct across prefill/decode if a
+      # future connector release starts reading it.
       httpPort: 5597
       # Wire key: mooncake_protocol. Validated against the rdma path; tcp
       # exists for fallback networks where IB is unavailable.

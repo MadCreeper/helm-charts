@@ -72,12 +72,12 @@
           }
         },
         "mooncake": {
-          "description": "MooncakeConnector parameters, consulted only when pd.transferBackend=mooncake. The chart writes them into kv_connector_extra_config on the engine's --kv-transfer-config. Chart values are camelCase; the wire JSON keys the connector actually reads are snake_case, and the connector does NOT do strict key validation -- a misspelled key is silently dropped and the engine falls back to its own default. Chart-to-connector key map: httpPort -> http_port, protocol -> mooncake_protocol, deviceName -> device_name, numSenderWorkers -> num_workers.",
+          "description": "MooncakeConnector parameters, consulted only when pd.transferBackend=mooncake. The chart writes them into kv_connector_extra_config on the engine's --kv-transfer-config. Chart values are camelCase; the wire JSON keys the connector actually reads are snake_case, and the connector does NOT do strict key validation -- a misspelled key is silently dropped and the engine falls back to its own default. Chart-to-connector key map: httpPort -> http_port (currently not read by MooncakeConnector at vllm 0.30; emitted so the JSON shape stays forward-compatible), protocol -> mooncake_protocol, deviceName -> device_name, numSenderWorkers -> num_workers.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "httpPort": {
-              "description": "The connector's HTTP health-probe endpoint inside the engine (NOT the mooncake bootstrap side-channel the router dials). Wire key: http_port. Engine default: unused by the chart because we always pass a number; per-role defaults come from pd.<role>.nixl.httpPort to keep ports pairwise distinct across prefill/decode.",
+              "description": "Wire key: http_port. NOT read by MooncakeConnector at vllm 0.30 (the connector picks it up from nowhere; only moriio_connector.py uses this key at that tag). Emitted so the kv_connector_extra_config body stays shape-compatible with the nixl path, and harmless because the connector silently drops unknown keys. Per-role defaults mirror pd.<role>.nixl.httpPort so values stay pairwise distinct across prefill/decode if a future connector release starts reading it.",
               "type": "integer",
               "minimum": 1,
               "maximum": 65535

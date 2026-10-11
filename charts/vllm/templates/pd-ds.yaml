@@ -98,10 +98,11 @@ spec:
 {{- /* Mooncake router argv deltas; empty strings on the nixl path render
        nothing and keep the existing argv byte-identical. The bootstrap
        port (8998) is vLLM's engine-side default and the value vllm-router
-       unconditionally uses when --prefill URL omits a port; if an
-       operator overrides VLLM_MOONCAKE_BOOTSTRAP_PORT via env they own
-       the matching router argv too. See values.schema.json#definitions.
-       pdRole.mooncake and CHANGELOG-MOONCAKE.md section 4. */ -}}
+       unconditionally uses when --prefill URL omits a port
+       (router/src/routers/http/vllm_pd_router.rs); if an operator
+       overrides VLLM_MOONCAKE_BOOTSTRAP_PORT via env they own the
+       matching router argv too. See values.schema.json#definitions.
+       pdRole.mooncake for the schema-side mapping. */ -}}
 {{- $prefillPortSuffix := ternary " 8998" "" (eq $backend "mooncake") }}
 ---
 apiVersion: v1

@@ -186,15 +186,19 @@
 {{- if eq $backend "mooncake" }}
 {{- /* MooncakeConnector.__init__ reads snake_case keys out of
        kv_connector_extra_config and drops unknown keys silently -- no
-       validation. The four wire keys are http_port, mooncake_protocol,
-       device_name, num_workers. Chart values stay camelCase (see
-       values.schema.json#definitions.pdRole.mooncake) so the template
-       keeps the chart/wire rename in one place. Connector defaults
-       (mooncake_connector.py:950-970): protocol="rdma", num_workers=10,
-       device_name="". Match them below so an unset value on the chart
-       produces the same engine behaviour as a user-set default; this
-       matters because the mooncake gotcha was the engine silently
-       running on defaults while looking tuned. */}}
+       validation. The keys it actually reads at vllm 0.30 are
+       mooncake_protocol, device_name, num_workers. We also emit
+       http_port, which the connector ignores at 0.30 (only
+       moriio_connector.py reads it at that tag) -- kept in the JSON body
+       so the wire shape stays nixl-compatible and is forward-compatible
+       if a future connector release starts reading it. Chart values stay
+       camelCase (see values.schema.json#definitions.pdRole.mooncake) so
+       the template keeps the chart/wire rename in one place. Connector
+       defaults (mooncake_connector.py:950-970): protocol="rdma",
+       num_workers=10, device_name="". Match them below so an unset value
+       on the chart produces the same engine behaviour as a user-set
+       default; this matters because the mooncake gotcha was the engine
+       silently running on defaults while looking tuned. */}}
 {{- $mc := $pobj.mooncake | default dict }}
 {{- $mcExtra := dict
       "http_port"         ($mc.httpPort         | default $nixlHttpPort)
