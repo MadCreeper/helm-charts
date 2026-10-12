@@ -284,41 +284,18 @@ spec:
       {{- with $root.Values.volumes }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
-      {{- /* Router scheduling: inherits the engines' by default; the
-             *Replace fields swap a block wholesale. Pod-level, not per-role.
-             On top of inherit/replace, pd ALWAYS pins the router to its
-             slice's two leaders via preferredDuringScheduling podAffinity,
-             so the router sits in the same GPU rack as its engines -- a
-             cross-rack hop on every prefill/decode request would wreck the
-             latency budget. Preferred, not required: a rack with no slack
-             should still let the router schedule elsewhere rather than wedge
-             the slice. */}}
-      {{- $raff := $root.Values.affinity }}
+      {{- /* Router scheduling: pin to THIS slice's prefill leader on the
+             same node. */ -}}
+      {{- $raff := dict "podAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (list (dict
+           "labelSelector" (dict "matchLabels" (dict
+             "disaggregatedset.x-k8s.io/name" $fullname
+             "disaggregatedset.x-k8s.io/role" "prefill"
+             "disaggregatedset.x-k8s.io/slice" (printf "%d" $s)
+             "leaderworkerset.sigs.k8s.io/worker-index" "0"))
+           "topologyKey" "kubernetes.io/hostname"))) -}}
       {{- if not (kindIs "invalid" $pd.router.affinityReplace) }}{{ if $pd.router.affinityReplace }}{{ $raff = $pd.router.affinityReplace }}{{ end }}
       {{- end }}
-      {{- $sliceAffinity := dict "podAffinity" (dict "preferredDuringSchedulingIgnoredDuringExecution" (list
-          (dict "weight" 90 "podAffinityTerm" (dict "labelSelector" (dict "matchExpressions" (list
-              (dict "key" "disaggregatedset.x-k8s.io/name"  "operator" "In" "values" (list $fullname))
-              (dict "key" "disaggregatedset.x-k8s.io/role"  "operator" "In" "values" (list "prefill"))
-              (dict "key" "disaggregatedset.x-k8s.io/slice" "operator" "In" "values" (list (printf "%d" $s)))
-              (dict "key" "leaderworkerset.sigs.k8s.io/worker-index" "operator" "In" "values" (list "0"))
-          )) "topologyKey" "kubernetes.io/hostname"))
-          (dict "weight" 10 "podAffinityTerm" (dict "labelSelector" (dict "matchExpressions" (list
-              (dict "key" "disaggregatedset.x-k8s.io/name"  "operator" "In" "values" (list $fullname))
-              (dict "key" "disaggregatedset.x-k8s.io/role"  "operator" "In" "values" (list "decode"))
-              (dict "key" "disaggregatedset.x-k8s.io/slice" "operator" "In" "values" (list (printf "%d" $s)))
-              (dict "key" "leaderworkerset.sigs.k8s.io/worker-index" "operator" "In" "values" (list "0"))
-          )) "topologyKey" "kubernetes.io/hostname"))
-      )) }}
-      {{- $mergedRaff := $raff | default dict }}
-      {{- if hasKey $mergedRaff "podAffinity" }}
-        {{- $existing := get $mergedRaff "podAffinity" }}
-        {{- $merged := mergeOverwrite (deepCopy $sliceAffinity.podAffinity) $existing }}
-        {{- $_ := set $mergedRaff "podAffinity" $merged }}
-      {{- else }}
-        {{- $_ := set $mergedRaff "podAffinity" $sliceAffinity.podAffinity }}
-      {{- end }}
-      {{- with $mergedRaff }}
+      {{- with $raff }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
