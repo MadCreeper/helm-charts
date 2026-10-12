@@ -1,0 +1,21 @@
+{{- if .Values.grafana.datasource.enabled }}
+{{- $ds := .Values.grafana.datasource }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bodylog-victorialogs.fullname" . }}-grafana-datasource
+  namespace: {{ $ds.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "bodylog-victorialogs.labels" . | nindent 4 }}
+    {{- toYaml $ds.labels | nindent 4 }}
+data:
+  {{ include "bodylog-victorialogs.fullname" . }}.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: {{ $ds.name | quote }}
+        uid: {{ $ds.uid | quote }}
+        type: victoriametrics-logs-datasource
+        access: proxy
+        url: {{ include "bodylog-victorialogs.vlUrl" . }}
+        isDefault: {{ $ds.isDefault }}
+{{- end }}

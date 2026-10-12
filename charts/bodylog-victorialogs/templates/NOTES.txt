@@ -1,0 +1,14 @@
+Vector ships {{ .Values.bodylog.hostPath | default .Values.bodylog.existingClaim }} (next to the bodylog pod) into
+  {{ include "bodylog-victorialogs.vlUrl" . }}
+{{- if eq .Values.vector.readFrom "end" }}
+Only records written from now on are shipped (vector.readFrom=end).
+{{- end }}
+{{- if .Values.grafana.datasource.enabled }}
+
+Grafana datasource "{{ .Values.grafana.datasource.name }}" is provided as ConfigMap
+{{ .Values.grafana.datasource.namespace | default .Release.Namespace }}/{{ include "bodylog-victorialogs.fullname" . }}-grafana-datasource. Grafana needs the
+victoriametrics-logs-datasource plugin installed to use it (see the chart README).
+{{- end }}
+
+Verify:  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+Query:   curl {{ include "bodylog-victorialogs.vlUrl" . }}/select/logsql/query -d 'query=status:500' -d 'limit=10'

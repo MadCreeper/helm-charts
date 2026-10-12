@@ -38,6 +38,7 @@ extra_values() {
   case "$1" in
     sglang|vllm)      echo "--set modelRoute.nginx.outputConfigMap=ci/openresty-conf" ;;
     bodylog-exporter) echo "--set data.hostPath=/ci --set nodeSelector.ci=ci" ;;
+    bodylog-victorialogs) echo "--set bodylog.hostPath=/ci" ;;
     continuation-gateway) echo "--set config.continuationModel=ci" ;;
     swiss)                echo "--set rbac.namespaces[0]=ci" ;;
     *)                echo "" ;;

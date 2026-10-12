@@ -1,0 +1,57 @@
+{{- if and .Values.bodylog.hostPath .Values.bodylog.existingClaim }}
+{{- fail "set only one of bodylog.hostPath and bodylog.existingClaim" }}
+{{- end }}
+{{- if not (or .Values.bodylog.hostPath .Values.bodylog.existingClaim) }}
+{{- fail "set bodylog.hostPath (or bodylog.existingClaim) to where bodylog writes its JSONL" }}
+{{- end }}
+{{- $query := list (printf "_stream_fields=%s" (join "," .Values.vector.streamFields)) }}
+{{- with .Values.vector.timeField }}{{ $query = append $query (printf "_time_field=%s" .) }}{{ end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bodylog-victorialogs.fullname" . }}-vector
+  labels: {{- include "bodylog-victorialogs.labels" . | nindent 4 }}
+data:
+  vector.yaml: |
+    data_dir: /vector-data-dir
+    api:
+      enabled: true
+      address: 0.0.0.0:8686
+    sources:
+      bodylog:
+        type: file
+        # Checkpoints live on the node, not in the pod's emptyDir data_dir.
+        data_dir: /var/lib/vector-checkpoint
+        include: ["/data/bodylog/20*/*.jsonl"]
+        read_from: {{ .Values.vector.readFrom }}
+        max_line_bytes: {{ int64 .Values.vector.maxLineBytes }}
+    transforms:
+      bodylog_record:
+        type: remap
+        inputs: [bodylog]
+        file: /etc/vector/bodylog.vrl
+    sinks:
+      victorialogs:
+        type: http
+        inputs: [bodylog_record]
+        uri: {{ printf "%s/insert/jsonline?%s" (include "bodylog-victorialogs.vlUrl" .) (join "&" $query) | quote }}
+        method: post
+        encoding:
+          codec: json
+        framing:
+          method: newline_delimited
+        compression: gzip
+        batch:
+          max_events: 1000
+          timeout_secs: 1
+        # Never give up on a batch: with a retry limit, Vector drops the batch once
+        # VictoriaLogs has been down longer than the retries last (a restart, or
+        # the first minute of an install) and the lines are lost. Acknowledgements
+        # hold the file checkpoint until VictoriaLogs has accepted the lines, so an
+        # outage pauses reading instead.
+        request:
+          retry_max_duration_secs: 30
+        acknowledgements:
+          enabled: true
+  bodylog.vrl: |
+{{ .Values.vector.vrl | default (.Files.Get "files/bodylog.vrl") | indent 4 }}

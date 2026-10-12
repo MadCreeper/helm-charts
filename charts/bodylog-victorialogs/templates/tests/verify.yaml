@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "bodylog-victorialogs.fullname" . }}-verify
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "bodylog-victorialogs.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: verify
+      image: {{ .Values.test.image | quote }}
+      env:
+        - { name: VL, value: {{ include "bodylog-victorialogs.vlUrl" . | quote }} }
+        - { name: WITHIN, value: {{ .Values.test.expectRecordsWithin | quote }} }
+      command:
+        - sh
+        - -c
+        - |
+          set -u
+          fail() { echo "FAIL: $*"; exit 1; }
+          # The same URL Vector ships to and Grafana reads from.
+          h=$(curl -sS --max-time 10 "$VL/health") || fail "$VL unreachable"
+          [ "$h" = "OK" ] || fail "$VL/health answered '$h'"
+          echo "ok    $VL/health"
+          q() { curl -sS --fail --max-time 30 "$VL/select/logsql/query" --data-urlencode "query=$1"; }
+          all=$(q '* | stats count() n') || fail "query API error"
+          echo "ok    query API: $all"
+          if [ -n "$WITHIN" ]; then
+            n=$(q "_time:$WITHIN | stats count() n" | sed -n 's/.*"n":"\([0-9]*\)".*/\1/p')
+            [ "${n:-0}" -gt 0 ] || fail "no records in the last $WITHIN -- is Vector shipping?"
+            echo "ok    $n records in the last $WITHIN"
+          fi

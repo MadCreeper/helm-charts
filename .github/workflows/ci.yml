@@ -46,6 +46,7 @@ jobs:
             case "$c" in
               sglang|vllm)      args="--set modelRoute.nginx.outputConfigMap=ci/openresty-conf" ;;
               bodylog-exporter) args="--set data.hostPath=/ci --set nodeSelector.ci=ci" ;;
+              bodylog-victorialogs) args="--set bodylog.hostPath=/ci" ;;
               continuation-gateway) args="--set config.continuationModel=ci" ;;
               swiss)            args="--set rbac.namespaces[0]=ci" ;;
               *)                args="" ;;

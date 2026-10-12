@@ -1,0 +1,79 @@
+# Where bodylog writes its hourly JSONL (<dataDir>/<YYYY-MM-DD>/<HH>.jsonl).
+# Vector runs on the same node as the bodylog pod (podAffinity, below) and reads
+# those files directly, so give exactly one of hostPath / existingClaim -- whichever
+# the bodylog chart was installed with (its persistence.hostPath or the PVC).
+bodylog:
+  hostPath: ""
+  existingClaim: ""             # a ReadWriteOnce claim works: both pods share the node
+  # The bodylog pod to follow. Empty namespace means this release's namespace.
+  namespace: ""
+  podLabels:
+    app.kubernetes.io/name: bodylog
+
+# VictoriaLogs (chart victoria-logs-single, aliased). Set enabled=false and
+# victorialogsUrl to ship into a VictoriaLogs you already run instead.
+victorialogs:
+  enabled: true
+  server:
+    # A bare number here is MONTHS; always give a unit.
+    retentionPeriod: 14d
+    extraArgs:
+      # Body-log records carry whole request and response bodies; with the default
+      # line limit, long-prompt requests are skipped at ingestion.
+      insert.maxLineSizeBytes: "16777216"
+    persistentVolume:
+      enabled: true
+      # Measured: ~10GB/hour of raw records stores as ~12GB/day, so 14 days ~ 170GB.
+      size: 100Gi
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 8Gi }
+victorialogsUrl: ""             # e.g. http://victorialogs.logging.svc:9428 (only when enabled=false)
+
+vector:
+  image:
+    repository: docker.io/timberio/vector
+    tag: 0.58.0-distroless-libc
+    pullPolicy: IfNotPresent
+  # "end" ships only what is written after Vector first starts. "beginning" also
+  # ships the current day's files, which on a busy router is hundreds of GB.
+  readFrom: end
+  # Records reach ~11MB; longer lines are dropped at the source.
+  maxLineBytes: 16777216
+  # Indexed stream fields: keep them low-cardinality.
+  streamFields: [method, status, model]
+  # Field that carries the request time. Empty stamps entries with ship time.
+  timeField: ts
+  # The VRL program for each record. Empty uses files/bodylog.vrl.
+  vrl: ""
+  # Node directory for Vector's read checkpoints, so a restart resumes where it
+  # stopped instead of skipping or repeating lines. Empty: /var/lib/<fullname>.
+  checkpointHostPath: ""
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { memory: 2Gi }
+
+grafana:
+  # A ConfigMap that Grafana's datasource sidecar (kube-prometheus-stack) loads.
+  # Grafana also needs the victoriametrics-logs-datasource plugin -- see README.
+  datasource:
+    enabled: true
+    namespace: monitoring       # the sidecar watches Grafana's own namespace by default
+    labels:
+      grafana_datasource: "1"
+    name: VictoriaLogs
+    uid: victorialogs
+    isDefault: false
+
+# helm test: VictoriaLogs answers at the URL Vector and Grafana are configured with,
+# and its query API works. Set expectRecordsWithin (e.g. 1h) on a router with steady
+# traffic to also require that records arrived in that window.
+test:
+  image: docker.io/curlimages/curl:8.11.1
+  expectRecordsWithin: ""
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+nameOverride: ""
+fullnameOverride: ""
