@@ -1,0 +1,12 @@
+apiVersion: v2
+name: catalog-mirror
+description: "In-cluster copy of the model catalog and this helm chart repository, for clusters whose route to GitHub is slow or unreliable; swiss is pointed at it instead of GitHub Pages"
+home: https://github.com/modelsphere/helm-charts
+sources:
+  - https://github.com/modelsphere/helm-charts
+type: application
+version: 0.1.0
+# The sync script ships inside the chart (files/sync.py), so the chart version is
+# the version of what runs; appVersion follows it.
+appVersion: "0.1.0"
+keywords: [swiss, model-catalog, mirror, helm-repository]

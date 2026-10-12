@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "catalog-mirror.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "catalog-mirror.labels" . | nindent 4 }}
+spec:
+  # One writer per volume: sync.py assumes it is the only process writing the copy.
+  replicas: 1
+  # A ReadWriteOnce volume has to be released by the old pod before the new one mounts it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "catalog-mirror.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "catalog-mirror.selectorLabels" . | nindent 8 }}
+      annotations:
+        # A changed sync.py or nginx.conf rolls the pod.
+        checksum/files: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nginx
+          image: "{{ .Values.image.nginx.repository }}:{{ .Values.image.nginx.tag }}"
+          imagePullPolicy: {{ .Values.image.nginx.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          volumeMounts:
+            - { name: data, mountPath: /data, readOnly: true }
+            - { name: files, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          resources: {{- toYaml .Values.resources.nginx | nindent 12 }}
+        - name: sync
+          image: "{{ .Values.image.python.repository }}:{{ .Values.image.python.tag }}"
+          imagePullPolicy: {{ .Values.image.python.pullPolicy }}
+          command: ["python3", "-u", "/files/sync.py"]
+          env:
+            - { name: CATALOG_URL, value: {{ .Values.upstream.catalogUrl | quote }} }
+            - { name: CHARTS_URL, value: {{ .Values.upstream.chartsUrl | quote }} }
+            - { name: DATA_DIR, value: /data }
+            - { name: INTERVAL, value: {{ .Values.sync.intervalSeconds | quote }} }
+            - { name: RETRY_INTERVAL, value: {{ .Values.sync.retryIntervalSeconds | quote }} }
+            - { name: TIMEOUT, value: {{ .Values.sync.timeoutSeconds | quote }} }
+            - { name: RETRIES, value: {{ .Values.sync.retries | quote }} }
+            {{- with .Values.sync.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: files, mountPath: /files, readOnly: true }
+          # The pod is Ready only once both halves have published an index; until
+          # then swiss would get 404s. Each index is written after every file it
+          # names, so its presence means that half is complete.
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/data/model-catalog/index.json", "-a", "-f", "/data/helm-charts/index.yaml"]
+            periodSeconds: 10
+          resources: {{- toYaml .Values.resources.sync | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "catalog-mirror.claimName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: files
+          configMap:
+            name: {{ include "catalog-mirror.fullname" . }}-files
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

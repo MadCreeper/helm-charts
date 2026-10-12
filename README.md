@@ -24,6 +24,7 @@ helm search repo modelsphere
 | [`rdma-injector`](charts/rdma-injector) | A mutating webhook that injects `NCCL_IB_HCA` and the node's RDMA device list into pods labelled `rdma-ib: "true"` |
 | [`console`](charts/console) | The ModelSphere community portal — identity (users, roles, login) and a federation gateway to Swiss and other backends |
 | [`swiss`](charts/swiss) | swissd, the deploy control plane for the sglang and vllm charts: reads the model catalog, manages releases through its own ServiceAccount, serves the web UI |
+| [`catalog-mirror`](charts/catalog-mirror) | An in-cluster copy of the model catalog and this chart repository, for clusters with a poor route to GitHub; swiss reads it instead of GitHub Pages |
 
 `sglang` and `vllm` pull in `cart` as a subchart, gated on `cart.enabled`.
 Installing either of them gives you an engine and a router that already know
