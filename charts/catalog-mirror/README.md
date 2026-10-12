@@ -25,7 +25,11 @@ The pod becomes Ready once the first sync has published both indexes.
 `helm test` then reads the copy through the Service the way swiss and helm do:
 every catalog version file matches the digest the index pins, every chart
 archive is served and matches a digest in `index.yaml`, and a missing archive
-is a 404.
+is a 404. It also fails when the **last sync round** failed (status.json), even
+though the copy keeps serving: a mirror that no longer follows its upstream
+should show up red. The message names the half and the upstream error; once
+the upstream is reachable again the next round (within
+`sync.retryIntervalSeconds`) clears it.
 
 Then, in the swiss site profile (the `swissd-profile` ConfigMap, re-read within a
 minute; the install notes print these URLs for your release):
@@ -70,7 +74,7 @@ an existing one, set `persistence.existingClaim`.
 
 | value | default | |
 |---|---|---|
-| `upstream.catalogUrl` / `upstream.chartsUrl` | GitHub Pages | what is mirrored |
+| `upstream.catalogUrl` / `upstream.chartsUrl` | GitHub Pages | what is mirrored; `chartsUrl` may be any classic helm repository, with absolute archive URLs (chart-releaser) or relative ones (ChartMuseum, Harbor) |
 | `sync.intervalSeconds` | `300` | seconds between rounds |
 | `sync.extraEnv` | `[]` | e.g. `HTTPS_PROXY` when GitHub is reachable only through a proxy |
 | `image.nginx` / `image.python` | `docker.io/library/{nginx:1.27-alpine,python:3.12-alpine}` | point at a mirror if the cluster cannot pull from Docker Hub |

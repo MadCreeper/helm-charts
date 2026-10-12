@@ -22,7 +22,8 @@ Rules that keep the copy usable at every moment:
     round without touching the disk.
 
 Standard library only: the python image has no PyYAML, so the helm index is
-handled as text (archive URLs rewritten to relative names, digests matched).
+handled as text (archive URLs, absolute or relative, rewritten to bare file
+names; digests matched).
 
   python3 sync.py            loop forever, every INTERVAL seconds
   python3 sync.py --once     one round, exit 0 on success
@@ -172,7 +173,10 @@ def sync_catalog():
     return f"catalog: {len(idx.get('models', []))} models, {got} version files fetched, {kept} unchanged, {reports} reports"
 
 
-URL_LINE = re.compile(r"^(\s*-\s*)(https?://\S+?/([^/\s]+\.tgz))\s*$", re.M)
+# An archive URL in index.yaml is absolute (chart-releaser: GitHub Releases) or
+# relative to the repo URL (ChartMuseum, Harbor: charts/<name>.tgz). Group 3 is the
+# file name the mirror stores it under.
+URL_LINE = re.compile(r"^(\s*-\s*)((?:\S*/)?([^/\s]+\.tgz))\s*$", re.M)
 DIGEST_LINE = re.compile(r"^\s*digest:\s*([0-9a-f]{64})\s*$", re.M)
 
 
@@ -197,12 +201,12 @@ def sync_charts():
         if local_sha(dst) in digests:
             kept += 1
             continue
-        body = fetch(url)
+        body = fetch(urllib.parse.urljoin(base, url))  # a relative URL resolves against the repo
         if sha256(body) not in digests:
             raise ValueError(f"{name}: sha256 {sha256(body)[:12]} matches no digest in index.yaml")
         write_atomic(dst, body)
         got += 1
-    # Archive URLs become relative names; helm resolves them against the repo URL.
+    # Archive URLs become bare file names; helm resolves them against the repo URL.
     rewritten = URL_LINE.sub(lambda mo: f"{mo.group(1)}{mo.group(3)}", text)
     write_if_changed(index_path, rewritten.encode())
     save_etag("charts", etag)

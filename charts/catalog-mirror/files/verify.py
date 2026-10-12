@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """helm test: read the mirror through its Service the way swiss and helm do.
 
-  - status.json: the last sync round succeeded for both halves;
+  - status.json: the last sync round succeeded for both halves. This fails
+    while the upstream is unreachable even though the copy itself is intact:
+    a mirror that has stopped following its upstream is a problem worth a red
+    test, and the message says which half failed and why;
   - catalog: every version file index.json names is served and matches its
     sha256 digest (swiss refuses a version whose digest does not match);
   - charts: index.yaml names its archives by relative name (so helm fetches
@@ -40,7 +43,11 @@ def last_sync():
     status = json.loads(get("status.json"))
     for half in ("catalog", "charts"):
         s = status.get(half, {})
-        check(s.get("ok") is True, f"last sync of {half}: {s.get('detail') or s.get('error')}")
+        if s.get("ok") is True:
+            check(True, f"last sync of {half}: {s.get('detail')}")
+        else:
+            check(False, f"last sync of {half} failed at {status.get('time')} "
+                         f"(the copy still serves, but no longer follows upstream): {s.get('error')}")
 
 
 def catalog():

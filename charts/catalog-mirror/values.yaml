@@ -14,7 +14,9 @@ imagePullSecrets: []
 
 # What is mirrored. Both are plain HTTP(S) sites: the catalog's index.json plus the
 # version files it names, and a classic helm repository's index.yaml plus the
-# archives it lists (wherever those live; GitHub Releases for the default).
+# archives it lists, by absolute URL (chart-releaser: GitHub Releases, the default)
+# or relative to the repository (ChartMuseum, Harbor). OCI registries are not
+# helm repositories in this sense and cannot be mirrored this way.
 upstream:
   catalogUrl: https://modelsphere.github.io/model-catalog/
   chartsUrl: https://modelsphere.github.io/helm-charts/
