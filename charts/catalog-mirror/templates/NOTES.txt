@@ -1,0 +1,13 @@
+catalog-mirror is deployed as {{ include "catalog-mirror.fullname" . }}. It becomes Ready once the
+first sync round has published the catalog index.
+
+Point swiss at it in the site profile (swissd re-reads it within a minute):
+
+  chartRepo: {{ include "catalog-mirror.url" . }}/helm-charts
+  catalogs:
+    - name: default          # keep the name existing releases recorded in their plans
+      url: {{ include "catalog-mirror.url" . }}/model-catalog/
+      default: true
+
+Last sync result:  {{ include "catalog-mirror.url" . }}/status.json
+Verify the copy:   helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

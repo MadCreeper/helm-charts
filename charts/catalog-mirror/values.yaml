@@ -1,0 +1,67 @@
+# Two containers in one pod: nginx serves the copy, sync (files/sync.py, Python
+# standard library only) refreshes it. Both are stock upstream images; a cluster
+# without a docker.io pull path has to mirror them and point these at the mirror.
+image:
+  nginx:
+    repository: docker.io/library/nginx
+    tag: "1.27-alpine"
+    pullPolicy: IfNotPresent
+  python:
+    repository: docker.io/library/python
+    tag: "3.12-alpine"
+    pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# What is mirrored. Both are plain HTTP(S) sites: the catalog's index.json plus the
+# version files it names, and a classic helm repository's index.yaml plus the
+# archives it lists, by absolute URL (chart-releaser: GitHub Releases, the default)
+# or relative to the repository (ChartMuseum, Harbor). OCI registries are not
+# helm repositories in this sense and cannot be mirrored this way.
+upstream:
+  catalogUrl: https://modelsphere.github.io/model-catalog/
+  chartsUrl: https://modelsphere.github.io/helm-charts/
+
+sync:
+  # Seconds between rounds. An unchanged upstream costs one conditional request per
+  # index (If-None-Match -> 304), so a short interval is cheap.
+  intervalSeconds: 300
+  # Seconds before the next try after a failed round (the previous copy keeps serving).
+  retryIntervalSeconds: 120
+  # Per request: timeout, and attempts for network errors and 5xx/429.
+  timeoutSeconds: 30
+  retries: 6
+  # Extra environment for the sync container, e.g. HTTPS_PROXY for a cluster that
+  # reaches GitHub only through a proxy.
+  extraEnv: []
+
+# The copy lives on a volume, so a restarted pod serves the last complete copy at
+# once instead of waiting for a fresh sync. Today it is a few MB.
+persistence:
+  enabled: true
+  # Use a PVC that already exists (and already holds a copy) instead of creating one.
+  existingClaim: ""
+  storageClass: ""        # empty = the cluster default
+  accessModes: [ReadWriteOnce]
+  size: 2Gi
+  # The chart's own PVC is kept on `helm uninstall`; delete it by hand when done.
+  keep: true
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  nginx:
+    requests: {cpu: 10m, memory: 16Mi}
+    limits: {cpu: 500m, memory: 128Mi}
+  sync:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+nameOverride: ""
+fullnameOverride: ""

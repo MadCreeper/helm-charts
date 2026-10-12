@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "catalog-mirror.fullname" . }}-verify
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "catalog-mirror.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: verify
+      image: "{{ .Values.image.python.repository }}:{{ .Values.image.python.tag }}"
+      imagePullPolicy: {{ .Values.image.python.pullPolicy }}
+      command: ["python3", "-u", "/files/verify.py", {{ include "catalog-mirror.url" . | quote }}]
+      volumeMounts:
+        - { name: files, mountPath: /files, readOnly: true }
+  volumes:
+    - name: files
+      configMap:
+        name: {{ include "catalog-mirror.fullname" . }}-verify
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "catalog-mirror.fullname" . }}-verify
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "catalog-mirror.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  verify.py: |-
+{{ .Files.Get "files/verify.py" | indent 4 }}
