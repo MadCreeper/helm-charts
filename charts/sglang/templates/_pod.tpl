@@ -911,6 +911,52 @@ check {{ $target.host | quote }} {{ $target.port | quote }} || { echo "router no
 exit 0
 {{- end -}}
 
+{{- /* Liveness probe for the DisaggregatedSet router -- detects upstream-set
+       drift. Strategy: restart on GROWTH only. getent re-resolves the slice
+       headless Service on every tick; any IP it returns that was not baked
+       into router argv at boot (recorded in /run/pd-router/<role>-ips by
+       the boot script) means a new upstream appeared and the running router
+       can never learn about it. Shrinkage is intentionally silent -- the
+       router's own health checker already quarantines dead URLs, and
+       crashing on shrinkage would crash-loop the router on a permanent,
+       intentional scale-down. Missing argv-file is tolerated (pod still
+       in boot loop).
+
+       Cadence: 10s period, 2 failures = 20s of sustained drift before
+       restart. Tight because false positives are essentially impossible
+       (the headless Service selector is locked to this slice's leaders)
+       and late detection costs real capacity. Drop straight in as the
+       router container's livenessProbe; pair with the readinessProbe from
+       sglang.pdRouterProbes -- separate concerns. */ -}}
+{{- define "sglang.pdRouterLivenessProbe" -}}
+{{- $roles := .roles -}}
+livenessProbe:
+  exec:
+    command: ["bash", "-lc", {{ include "sglang.pdRouterLivenessProbeScript" (dict "roles" $roles) | quote }}]
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 2
+{{- end -}}
+
+{{- define "sglang.pdRouterLivenessProbeScript" -}}
+{{- $roles := .roles -}}
+set -u
+rc=0
+check() {
+  local role=$1 svc=$2 file="/run/pd-router/$3"
+  [ -f "$file" ] || return 0
+  local ip
+  while read -r ip; do
+    [ -n "$ip" ] || continue
+    grep -qx "$ip" "$file" || { echo "router stale: $role upstream $ip appeared after boot" >&2; rc=1; }
+  done < <(getent hosts "$svc" | awk '{print $1}' | sort -u)
+}
+{{- range $role, $target := $roles }}
+check {{ $role | quote }} {{ $target.host | quote }} {{ $role }}-ips
+{{- end }}
+exit $rc
+{{- end -}}
+
 {{/*
   The preStop hook's drain script, shared by the Deployment pod and the LWS
   leader. `kill` adds the LWS-only tail.
