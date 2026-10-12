@@ -1164,6 +1164,11 @@ rdma:
 # what a PDB is NOT: it does not keep replicas alive (a crash, an OOM kill or the
 # scaler scaling down are not disruptions it can refuse), and it does not govern
 # `helm upgrade` -- rollouts go through strategy / lws.rolloutStrategy instead.
+#
+# Under pd A/B (pd.enabled, pd.colocate: false) this block drives more than one
+# PDB: one per (role, slice) for the engines, plus one per slice for the router
+# (rendered only when pd.router.replicas >= 2, hardcoded to minAvailable: 1 --
+# "always keep one front door of this slice alive").
 podDisruptionBudget:
   enabled: true
   annotations: {}
