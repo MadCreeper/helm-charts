@@ -204,17 +204,31 @@ spec:
           #                remote_engine_id) into each request so the
           #                receiving engine can KV-recv from prefill on
           #                demand.
+          #
+          # Wait for the EXPECTED leader count from each role, not "any": the
+          # argv we bake below is frozen for the life of this pod, so a
+          # router that execs on the first visible IP serves the whole slice
+          # on a partial upstream list forever. publishNotReadyAddresses lets
+          # us see leaders as soon as they have a pod IP (not
+          # readiness-gated), so in the common case this loop is a few
+          # seconds, not the full 300s.
           PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
           DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
+          PF_EXPECT={{ $pd.prefill.replicas | default 1 }}
+          DC_EXPECT={{ $pd.decode.replicas | default 1 }}
           for i in $(seq 1 60); do
             PF_IPS=$(getent hosts "$PF_HL" | awk '{print $1}' | sort -u)
             DC_IPS=$(getent hosts "$DC_HL" | awk '{print $1}' | sort -u)
-            [ -n "$PF_IPS" ] && [ -n "$DC_IPS" ] && break
-            echo "router: waiting for slice {{ $s }} upstreams (${i})"
+            PF_N=$(echo -n "$PF_IPS" | grep -c .)
+            DC_N=$(echo -n "$DC_IPS" | grep -c .)
+            [ "$PF_N" -ge "$PF_EXPECT" ] && [ "$DC_N" -ge "$DC_EXPECT" ] && break
+            echo "router: slice {{ $s }} upstreams not all resolvable yet" \
+                 "(prefill $PF_N/$PF_EXPECT, decode $DC_N/$DC_EXPECT; try $i/60)"
             sleep 5
           done
-          if [ -z "$PF_IPS" ] || [ -z "$DC_IPS" ]; then
-            echo "router: no endpoints for prefill/decode headless svc in slice {{ $s }}" >&2
+          if [ "$PF_N" -lt "$PF_EXPECT" ] || [ "$DC_N" -lt "$DC_EXPECT" ]; then
+            echo "router: slice {{ $s }} upstreams never fully resolvable" \
+                 "(prefill $PF_N/$PF_EXPECT, decode $DC_N/$DC_EXPECT)" >&2
             exit 1
           fi
           PF_ARGS=""
