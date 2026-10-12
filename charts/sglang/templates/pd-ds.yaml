@@ -216,8 +216,8 @@ spec:
                appears in DNS after boot -- argv is immutable and the running
                router can never learn about post-boot upstreams. */}}
         {{- include "sglang.pdRouterLivenessProbe" (dict "roles" (dict
-             "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local" $fullname $s $root.Release.Namespace))
-             "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local"  $fullname $s $root.Release.Namespace)))) | nindent 8 }}
+             "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local" $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 30001))
+             "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local"  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort  | default 30002)))) | nindent 8 }}
         ports:
         - { containerPort: {{ $root.Values.service.port }}, name: http }
         env:

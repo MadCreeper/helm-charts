@@ -924,7 +924,7 @@ livenessProbe:
   exec:
     command: ["bash", "-lc", {{ include "vllm.pdRouterLivenessProbeScript" (dict "roles" $roles) | quote }}]
   periodSeconds: 10
-  timeoutSeconds: 5
+  timeoutSeconds: 10
   failureThreshold: 2
 {{- end -}}
 
@@ -933,16 +933,26 @@ livenessProbe:
 set -u
 rc=0
 check() {
-  local role=$1 svc=$2 file="/run/pd-router/$3"
+  local role=$1 svc=$2 file="/run/pd-router/$3" port=$4
   [ -f "$file" ] || return 0
   local ip
   while read -r ip; do
     [ -n "$ip" ] || continue
-    grep -qx "$ip" "$file" || { echo "router stale: $role upstream $ip appeared after boot" >&2; rc=1; }
+    grep -qx "$ip" "$file" && continue
+    # New IP not in argv. Only count drift once it is actually SERVING:
+    # restarting into a still-loading engine is wasted (router can't route
+    # to it) and on engines whose router blocks its own listener on a
+    # per-upstream bootstrap handshake (vllm + mooncake), is actively
+    # harmful -- the whole slice sits dark until the retry budget drains.
+    # Short timeout so a slow engine never stalls the probe itself.
+    if python3 -c "import urllib.request; urllib.request.urlopen('http://$ip:$port/health', timeout=2)" 2>/dev/null; then
+      echo "router stale: $role upstream $ip serving but not in argv" >&2
+      rc=1
+    fi
   done < <(getent hosts "$svc" | awk '{print $1}' | sort -u)
 }
 {{- range $role, $target := $roles }}
-check {{ $role | quote }} {{ $target.host | quote }} {{ $role }}-ips
+check {{ $role | quote }} {{ $target.host | quote }} {{ $role }}-ips {{ $target.port | quote }}
 {{- end }}
 exit $rc
 {{- end -}}
