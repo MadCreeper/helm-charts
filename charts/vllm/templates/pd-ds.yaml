@@ -187,8 +187,16 @@ spec:
           set -e
           # Resolve this slice's headless Services into a list of group-leader
           # IPs, then build repeated --prefill / --decode flags. getent prints
-          # one line per backing pod for a headless Service. The two backend
-          # flavours of argv differ by side channel:
+          # one line per backing pod for a headless Service.
+          #
+          # The gate is a per-role leader count, not "at least one IP": with
+          # replicas>1 the first answer often returns only the leader already
+          # in DNS, and exiting here bakes a partial upstream list into argv
+          # for the life of the process. publishNotReadyAddresses means the
+          # address appears as soon as the pod has an IP, so this waits on
+          # scheduling, not on the engines going Ready.
+          #
+          # The two backend flavours of argv differ by side channel:
           #   - nixl     : no bootstrap port to propagate, no extra router
           #                flag -- the router fetches each engine's NIXL
           #                handshake address from the engine itself and hands
@@ -204,17 +212,21 @@ spec:
           #                remote_engine_id) into each request so the
           #                receiving engine can KV-recv from prefill on
           #                demand.
-          PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
-          DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
+          PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local.
+          DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local.
+          PF_WANT={{ $pd.prefill.replicas }}
+          DC_WANT={{ $pd.decode.replicas }}
           for i in $(seq 1 60); do
             PF_IPS=$(getent hosts "$PF_HL" | awk '{print $1}' | sort -u)
             DC_IPS=$(getent hosts "$DC_HL" | awk '{print $1}' | sort -u)
-            [ -n "$PF_IPS" ] && [ -n "$DC_IPS" ] && break
-            echo "router: waiting for slice {{ $s }} upstreams (${i})"
+            PF_HAVE=$(printf '%s\n' "$PF_IPS" | sed '/^$/d' | wc -l)
+            DC_HAVE=$(printf '%s\n' "$DC_IPS" | sed '/^$/d' | wc -l)
+            [ "$PF_HAVE" -ge "$PF_WANT" ] && [ "$DC_HAVE" -ge "$DC_WANT" ] && break
+            echo "router: waiting for slice {{ $s }} upstreams (prefill $PF_HAVE/$PF_WANT, decode $DC_HAVE/$DC_WANT; attempt $i)"
             sleep 5
           done
-          if [ -z "$PF_IPS" ] || [ -z "$DC_IPS" ]; then
-            echo "router: no endpoints for prefill/decode headless svc in slice {{ $s }}" >&2
+          if [ "$PF_HAVE" -lt "$PF_WANT" ] || [ "$DC_HAVE" -lt "$DC_WANT" ]; then
+            echo "router: timed out waiting for slice {{ $s }} upstreams: prefill $PF_HAVE/$PF_WANT, decode $DC_HAVE/$DC_WANT" >&2
             exit 1
           fi
           PF_ARGS=""
@@ -223,6 +235,12 @@ spec:
           for ip in $DC_IPS; do DC_ARGS="$DC_ARGS --decode http://$ip:{{ $pd.decode.httpPort | default 8002 }}"; done
           echo "router: prefill$PF_ARGS"
           echo "router: decode $DC_ARGS"
+          # Persist the boot-time upstream set for the liveness drift probe.
+          # Router argv is immutable for the life of the process, so the file
+          # is the probe's only handle on "what upstreams were baked in".
+          install -d -m 0755 /run/pd-router
+          T=$(mktemp -p /run/pd-router); printf '%s\n' "$PF_IPS" >"$T"; mv "$T" /run/pd-router/prefill-ips
+          T=$(mktemp -p /run/pd-router); printf '%s\n' "$DC_IPS" >"$T"; mv "$T" /run/pd-router/decode-ips
           # shellcheck disable=SC2086
           exec vllm-router \
             --vllm-pd-disaggregation \
@@ -240,9 +258,13 @@ spec:
                  as soon as one engine answers per role. See
                  vllm.pdRouterProbes in _pod.tpl for the chain's rationale. */ -}}
         {{- $probeRoles := dict
-            "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local" $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 8001))
-            "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local"  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort | default 8002)) }}
+            "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local." $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 8001))
+            "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local."  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort | default 8002)) }}
         {{- include "vllm.pdRouterProbes" (dict "roles" $probeRoles) | nindent 8 }}
+        {{- /* Drift liveness: restart the router if a new prefill/decode IP
+               appears in DNS after boot -- argv is immutable and the running
+               router can never learn about post-boot upstreams. */}}
+        {{- include "vllm.pdRouterLivenessProbe" (dict "roles" $probeRoles) | nindent 8 }}
         {{- with $root.Values.env }}
         env:
           {{- toYaml . | nindent 8 }}

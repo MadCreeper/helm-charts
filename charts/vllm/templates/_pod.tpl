@@ -901,6 +901,67 @@ check {{ $target.host | quote }} {{ $target.port | quote }} || { echo "router no
 exit 0
 {{- end -}}
 
+{{- /* Liveness probe for the DisaggregatedSet router -- detects upstream-set
+       drift. Strategy: restart on GROWTH only. getent re-resolves the slice
+       headless Service on every tick; any IP it returns that was not baked
+       into router argv at boot (recorded in /run/pd-router/<role>-ips by
+       the boot script) means a new upstream appeared and the running router
+       can never learn about it. Shrinkage is intentionally silent -- the
+       router's own health checker already quarantines dead URLs, and
+       crashing on shrinkage would crash-loop the router on a permanent,
+       intentional scale-down. Missing argv-file is tolerated (pod still
+       in boot loop).
+
+       Cadence: 10s period, 2 failures = 20s of sustained drift before
+       restart. Tight because false positives are essentially impossible
+       (the headless Service selector is locked to this slice's leaders)
+       and late detection costs real capacity. Drop straight in as the
+       router container's livenessProbe; pair with the readinessProbe from
+       vllm.pdRouterProbes -- separate concerns. */ -}}
+{{- define "vllm.pdRouterLivenessProbe" -}}
+{{- $roles := .roles -}}
+livenessProbe:
+  exec:
+    command: ["bash", "-lc", {{ include "vllm.pdRouterLivenessProbeScript" (dict "roles" $roles) | quote }}]
+  periodSeconds: 10
+  timeoutSeconds: 10
+  failureThreshold: 2
+{{- end -}}
+
+{{- define "vllm.pdRouterLivenessProbeScript" -}}
+{{- $roles := .roles -}}
+set -u
+rc=0
+check() {
+  local role=$1 svc=$2 file="/run/pd-router/$3" port=$4
+  [ -f "$file" ] || return 0
+  local ip
+  while read -r ip; do
+    [ -n "$ip" ] || continue
+    grep -qx "$ip" "$file" && continue
+    # New IP not in argv. Only count drift once it is actually SERVING:
+    # restarting into a still-loading engine is wasted (router can't route
+    # to it) and on engines whose router blocks its own listener on a
+    # per-upstream bootstrap handshake (vllm + mooncake), is actively
+    # harmful -- the whole slice sits dark until the retry budget drains.
+    # Short timeout so a slow engine never stalls the probe itself.
+    if python3 -c "import urllib.request; urllib.request.urlopen('http://$ip:$port/health', timeout=2)" 2>/dev/null; then
+      echo "router stale: $role upstream $ip serving but not in argv" >&2
+      rc=1
+    fi
+  done < <(timeout 2 getent hosts "$svc" 2>/dev/null | awk '{print $1}' | sort -u)
+  # If timeout(1) kills getent (124 = resolver blip), the awk|sort pipeline
+  # emits empty input, the while loop never fires, rc stays 0 -- a CoreDNS
+  # flake is treated as "no data", not "drift". Restarting every PD router
+  # cluster-wide because of a 2s resolver stall would be the biggest self-
+  # inflicted DoS the chart could ship.
+}
+{{- range $role, $target := $roles }}
+check {{ $role | quote }} {{ $target.host | quote }} {{ $role }}-ips {{ $target.port | quote }}
+{{- end }}
+exit $rc
+{{- end -}}
+
 {{/*
   The preStop hook's drain script.
 
