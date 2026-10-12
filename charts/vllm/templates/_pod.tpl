@@ -949,7 +949,12 @@ check() {
       echo "router stale: $role upstream $ip serving but not in argv" >&2
       rc=1
     fi
-  done < <(getent hosts "$svc" | awk '{print $1}' | sort -u)
+  done < <(timeout 2 getent hosts "$svc" 2>/dev/null | awk '{print $1}' | sort -u)
+  # If timeout(1) kills getent (124 = resolver blip), the awk|sort pipeline
+  # emits empty input, the while loop never fires, rc stays 0 -- a CoreDNS
+  # flake is treated as "no data", not "drift". Restarting every PD router
+  # cluster-wide because of a 2s resolver stall would be the biggest self-
+  # inflicted DoS the chart could ship.
 }
 {{- range $role, $target := $roles }}
 check {{ $role | quote }} {{ $target.host | quote }} {{ $role }}-ips {{ $target.port | quote }}

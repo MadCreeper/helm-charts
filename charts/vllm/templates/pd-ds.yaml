@@ -212,8 +212,8 @@ spec:
           #                remote_engine_id) into each request so the
           #                receiving engine can KV-recv from prefill on
           #                demand.
-          PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
-          DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
+          PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local.
+          DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local.
           PF_WANT={{ $pd.prefill.replicas }}
           DC_WANT={{ $pd.decode.replicas }}
           for i in $(seq 1 60); do
@@ -258,8 +258,8 @@ spec:
                  as soon as one engine answers per role. See
                  vllm.pdRouterProbes in _pod.tpl for the chain's rationale. */ -}}
         {{- $probeRoles := dict
-            "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local" $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 8001))
-            "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local"  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort | default 8002)) }}
+            "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local." $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 8001))
+            "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local."  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort | default 8002)) }}
         {{- include "vllm.pdRouterProbes" (dict "roles" $probeRoles) | nindent 8 }}
         {{- /* Drift liveness: restart the router if a new prefill/decode IP
                appears in DNS after boot -- argv is immutable and the running

@@ -163,8 +163,8 @@ spec:
           # for the life of the process. publishNotReadyAddresses means the
           # address appears as soon as the pod has an IP, so this waits on
           # scheduling, not on the engines going Ready.
-          PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
-          DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local
+          PF_HL={{ $fullname }}-prefill-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local.
+          DC_HL={{ $fullname }}-decode-hl-s{{ $s }}.{{ $root.Release.Namespace }}.svc.cluster.local.
           PF_WANT={{ $pd.prefill.replicas }}
           DC_WANT={{ $pd.decode.replicas }}
           for i in $(seq 1 60); do
@@ -210,14 +210,14 @@ spec:
                budget so this pod isn't liveness-killed while engines load.
                See sglang.pdRouterProbes. */ -}}
         {{- include "sglang.pdRouterProbes" (dict "roles" (dict
-             "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local" $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 30001))
-             "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local"  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort  | default 30002)))) | nindent 8 }}
+             "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local." $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 30001))
+             "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local."  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort  | default 30002)))) | nindent 8 }}
         {{- /* Drift liveness: restart the router if a new prefill/decode IP
                appears in DNS after boot -- argv is immutable and the running
                router can never learn about post-boot upstreams. */}}
         {{- include "sglang.pdRouterLivenessProbe" (dict "roles" (dict
-             "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local" $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 30001))
-             "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local"  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort  | default 30002)))) | nindent 8 }}
+             "prefill" (dict "host" (printf "%s-prefill-hl-s%d.%s.svc.cluster.local." $fullname $s $root.Release.Namespace) "port" ($pd.prefill.httpPort | default 30001))
+             "decode"  (dict "host" (printf "%s-decode-hl-s%d.%s.svc.cluster.local."  $fullname $s $root.Release.Namespace) "port" ($pd.decode.httpPort  | default 30002)))) | nindent 8 }}
         ports:
         - { containerPort: {{ $root.Values.service.port }}, name: http }
         env:
