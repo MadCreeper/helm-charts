@@ -22,16 +22,31 @@ spec:
   {{- end }}
   endpoints:
     {{- /* A pd release publishes its engines through one headless Service per
-           role, whose port is named `http`. The only `http-inference` port such
-           a release has belongs to the router, and scraping that returns the
-           proxy's "Only POST requests are supported" line -- a target that fails
-           to parse, while both engines go unscraped and every engine panel sits
-           empty with nothing logged anywhere. Asking for `http` also excludes
-           the router for free: the operator emits a keep on the endpoint port
-           name. Both pd shapes publish those Services, so there is no colocate
-           case to special-case here. */}}
-    - port: {{ if .Values.pd.enabled }}http{{ else }}http-inference{{ end }}
-      path: {{ .Values.serviceMonitor.path | quote }}
-      interval: {{ .Values.serviceMonitor.interval | quote }}
-      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout | quote }}
+           role, named http-prefill / http-decode. The only http-inference port
+           such a release owns belongs to the router, and scraping that returns
+           the proxy's "Only POST requests are supported" line -- a target that
+           fails to parse while both engines go unscraped and every engine panel
+           sits empty with nothing logged anywhere. Naming the engine ports also
+           excludes the router for free: the operator emits a keep on the
+           endpoint port name.
+
+           One name per role rather than `http` on both, for two reasons. It
+           puts the role in Prometheus's `endpoint` label, so a query that wants
+           one half (prefill reuse rates, say, which the decode side can only
+           dilute) says endpoint="http-prefill" instead of pattern-matching the
+           Service name. And `http` is a common enough port name that a
+           neighbouring Service could carry it -- the bundled CART Service
+           already does; today only its lack of the app label keeps it out of
+           this selector, which is a thin thing to rely on.
+
+           Both pd shapes publish these Services, so there is no colocate case
+           here. The role Services' port names are the chart's own; nothing
+           resolves them by name (the router finds its engines over DNS and a
+           numeric port), so they are free to say what they mean. */}}
+    {{- range $p := ternary (list "http-prefill" "http-decode") (list "http-inference") $.Values.pd.enabled }}
+    - port: {{ $p }}
+      path: {{ $.Values.serviceMonitor.path | quote }}
+      interval: {{ $.Values.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ $.Values.serviceMonitor.scrapeTimeout | quote }}
+    {{- end }}
 {{- end -}}
