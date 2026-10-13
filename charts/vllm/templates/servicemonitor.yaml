@@ -21,7 +21,16 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   endpoints:
-    - port: http-inference
+    {{- /* A pd release publishes its engines through one headless Service per
+           role, whose port is named `http`. The only `http-inference` port such
+           a release has belongs to the router, and scraping that returns the
+           proxy's "Only POST requests are supported" line -- a target that fails
+           to parse, while both engines go unscraped and every engine panel sits
+           empty with nothing logged anywhere. Asking for `http` also excludes
+           the router for free: the operator emits a keep on the endpoint port
+           name. Both pd shapes publish those Services, so there is no colocate
+           case to special-case here. */}}
+    - port: {{ if .Values.pd.enabled }}http{{ else }}http-inference{{ end }}
       path: {{ .Values.serviceMonitor.path | quote }}
       interval: {{ .Values.serviceMonitor.interval | quote }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout | quote }}
