@@ -47,11 +47,24 @@ persistence:
   size: 2Ti
   # existingClaim: ""           # set to reuse a PVC you created yourself
 
-# Retention is by AGE, not by size -- nothing here reacts to the disk filling up,
-# so the volume must be sized for the window you keep.
+# Retention has two conditions and either one deletes: an age limit per kind of
+# file, and a disk-usage ceiling. The disk condition deletes the oldest data --
+# archives first, details only once no archive is left -- until the filesystem
+# holding the data directory is back under diskUsagePct.
+#
+# diskUsagePct is the one that actually bounds the volume, so set it whenever
+# the data directory shares a filesystem with anything else. Two things to
+# check before picking a number: the kubelet's imagefs/nodefs eviction
+# thresholds on that node have to sit above it, or the node starts evicting
+# pods and collecting images before bodylog ever trims; and bodylog's own data
+# has to be a large enough share of the filesystem for deleting it to help --
+# if the space is held by something else, a pass deletes nothing and warns,
+# which is correct but means the ceiling does not bound the volume.
 retention:
   keepDays: 60          # daily .tar.gz archives
   detailsKeepDays: 365  # the per-request detail records the exporter reads
+  diskUsagePct: 90      # 0 disables the disk condition
+  pruneIntervalSeconds: 3600  # a pass also runs at startup
 
 # Token guarding /summary and /metrics. Whatever scrapes those endpoints must
 # send the same value, or it gets 401 and silently stops collecting.
