@@ -37,4 +37,10 @@ rules:
   - apiGroups: ["leaderworkerset.x-k8s.io"]
     resources: ["leaderworkersets"]
     verbs: ["get", "list", "watch"]
+  # PD-disagg bundles: one DisaggregatedSet owns the prefill/decode role
+  # LWSs for a service; sizing reads spec.slices and the per-role
+  # leaderWorkerTemplate for pool accounting.
+  - apiGroups: ["disaggregatedset.x-k8s.io"]
+    resources: ["disaggregatedsets"]
+    verbs: ["get", "list", "watch"]
 {{- end }}
