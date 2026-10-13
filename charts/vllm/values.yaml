@@ -388,6 +388,21 @@ modelCheck:
 # derives (--nnodes, --node-rank, --master-addr, --master-port, --headless,
 # --distributed-executor-backend) are rejected here.
 #
+# vLLM fills usage.prompt_tokens_details.cached_tokens only when this flag is on;
+# without it the field is absent from every response. The gateway's request log
+# reads that field, so leaving it off silently removes cached-token accounting
+# from the whole chain -- the engine still caches, nothing downstream can tell.
+# It costs nothing to compute, which is why the default is on.
+#
+# Emitted before extraArgs, so a deployment that needs the flag gone can set
+# promptTokensDetails: false rather than fighting it from there (vLLM's argparse
+# takes the last occurrence of a repeated flag, and a store_true flag cannot be
+# turned back off by repeating it).
+#
+# Set it false for an engine image too old to know the flag: argparse rejects an
+# unknown option and the pod never starts.
+promptTokensDetails: true
+
 # Rejected under commandOverride below, which leaves no command line to append to.
 extraArgs: []
 

@@ -121,6 +121,17 @@
       (printf "--served-model-name=%s" $root.Values.model.name)
       "--host=0.0.0.0"
       (printf "--port=%v" $httpPort) }}
+{{- /* Without this flag vLLM leaves usage.prompt_tokens_details out of every
+       response, so cached_tokens is absent rather than zero. The gateway's
+       request log reads that field, which means a deployment that forgets the
+       flag loses cached-token accounting for the entire chain while the engine
+       goes on caching normally -- nothing reports an error, the number is just
+       never there. Default on because it costs nothing; promptTokensDetails:
+       false is for an engine image whose argparse does not know the flag, which
+       would otherwise refuse to start. */}}
+{{- if $root.Values.promptTokensDetails }}
+{{- $flags = append $flags "--enable-prompt-tokens-details" }}
+{{- end }}
 {{- /* Left out when empty, so vLLM uses the model's own max length.
        model.maxLen is the old name of model.contextLength and still wins when
        set, so values written for earlier chart versions keep their meaning. */}}
