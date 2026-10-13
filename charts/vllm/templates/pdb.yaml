@@ -1,9 +1,9 @@
 {{- if .Values.podDisruptionBudget.enabled -}}
 {{- $pdb := .Values.podDisruptionBudget -}}
 {{/*
-  A disruption budget for the ENGINE pods. The CART subchart ships its own
-  (charts/cart/templates/pdb.yaml) and is not touched by this one -- two
-  workloads, two budgets.
+  Disruption budgets for the ENGINE pods (and, under pd A/B, the per-slice
+  routers). The CART subchart ships its own (charts/cart/templates/pdb.yaml)
+  and is not touched by this one -- two workloads, two budgets.
 
   What this does and does not cover is the part worth being precise about,
   because the name suggests more than the object delivers:
@@ -57,27 +57,26 @@
      count, replicaCount / lws.replicas when it does not -- and under LWS a
      replica is a whole group of lws.size pods, which is what the PDB counts.
 */ -}}
+{{- /*
+  Two shapes, two paths below:
+    - pd A/B (pd.enabled and not pd.colocate): a DisaggregatedSet whose pods
+      carry labels injected by the DS/LWS chain (the chart's own `app` label
+      is rewritten by LWS), plus one router Deployment per slice. A single
+      PDB keyed on `app` cannot address the engine pods at all on this
+      shape -- so this branch renders one PDB per (role, slice) keyed on the
+      DS-injected labels, and one per slice for the router.
+    - everything else (Deployment, LWS, colocate): one PDB over the engine
+      pods, keyed on `app: <release>-vllm`, which all the pods of those
+      shapes do carry.
+*/ -}}
+{{- $pdAB := and .Values.pd.enabled (not .Values.pd.colocate) -}}
 {{- $floor := 0 -}}
 {{- $floorDesc := "" -}}
 {{- if .Values.pd.enabled -}}
-{{- if .Values.pd.colocate -}}
-{{- /* Colocate is a plain Deployment: replicaCount self-contained
-       appliances, one pod each. The else branch would land here too, but
-       say it directly -- pd turns the lws.enabled branch meaningless
-       without it. */ -}}
+{{- /* Only colocate reaches this branch in the single-PDB path; A/B computes
+       its own per-slice floor inside its loop below. */ -}}
 {{- $floor = int .Values.replicaCount -}}
 {{- $floorDesc = printf "replicaCount %d (colocate appliances)" $floor -}}
-{{- else -}}
-{{- /* A/B: the DisaggregatedSet's pods. One slice (replicaCount) holds the
-       whole role pair; a role with size 1 is one pod per replica, >=2 is a
-       group. The floor the PDB counts is the engine pods, most
-       conservative when every role sits at its configured replica/size. */ -}}
-{{- $s := int .Values.replicaCount -}}
-{{- $pf := mul (int .Values.pd.prefill.replicas) (int (.Values.pd.prefill.size | default 1)) -}}
-{{- $dc := mul (int .Values.pd.decode.replicas) (int (.Values.pd.decode.size | default 1)) -}}
-{{- $floor = mul $s (add $pf $dc) -}}
-{{- $floorDesc = printf "replicaCount %d x (prefill %dx%d + decode %dx%d) engine pods" $s (int .Values.pd.prefill.replicas) (int (.Values.pd.prefill.size | default 1)) (int .Values.pd.decode.replicas) (int (.Values.pd.decode.size | default 1)) -}}
-{{- end -}}
 {{- else if .Values.lws.enabled -}}
 {{- $groups := int (ternary .Values.scaler.minReplicas .Values.lws.replicas .Values.scaler.enabled) -}}
 {{- $floor = mul $groups (int .Values.lws.size) -}}
@@ -97,7 +96,7 @@
 {{- else -}}
 {{- $resolved = atoi $raw -}}
 {{- end -}}
-{{- if and (gt $floor 0) (ge $resolved $floor) }}
+{{- if and (not $pdAB) (gt $floor 0) (ge $resolved $floor) }}
 {{- /*
      The trap this exists to catch. disruptionsAllowed is (healthy - minAvailable),
      so a minAvailable equal to the fleet's floor means zero allowed the moment
@@ -111,6 +110,95 @@
 {{- fail (printf "vllm: podDisruptionBudget.minAvailable (%v) resolves to %d pod(s) against a fleet floor of %d (%s), so no voluntary eviction is allowed at all once the fleet is at its floor -- a node drain would block indefinitely rather than wait, and nothing scales the fleet back up to unblock it. Use maxUnavailable: 1, which always permits exactly one disruption whatever the replica count -- or make the two agree: minAvailable strictly below the floor, or a floor (%s) above minAvailable" $pdb.minAvailable $resolved $floor $floorDesc (ternary "scaler.minReplicas" (ternary "lws.replicas x lws.size" "replicaCount" .Values.lws.enabled) .Values.scaler.enabled)) }}
 {{- end }}
 {{- end }}
+{{- if $pdAB }}
+{{- /*
+     Under pd A/B a slice is the serving unit: its own prefill set, its own
+     decode set, its own router in front. Each role therefore gets its own PDB
+     per slice, and the router its own per slice -- drain parallelism is per
+     slice (a maintenance pass touches at most one pod of each role in each
+     slice at a time, never two of the same role in one slice), and the
+     failure mode the budget encodes matches the failure mode the deployment
+     has ("a slice is down", not "some pods somewhere are down").
+
+     Selectors key on the labels the DisaggregatedSet controller injects into
+     every engine pod it manages -- disaggregatedset.x-k8s.io/{name,role,slice}
+     -- because the chart's own `app` label is NOT trustworthy on this shape:
+     the LWS controller rewrites `app` on the leader/worker templates it
+     stamps out, so an app-keyed PDB would silently match nothing. The router
+     is a plain Deployment and does carry `app`, so its per-slice PDB keys on
+     `app` + `component: router` + `slice`.
+
+     No worker-index filter on the engine PDBs: under lws.restartPolicy
+     RecreateGroupOnPodRestart losing one pod restarts the group, so
+     maxUnavailable: 1 counted over pods reads as "at most one GROUP out at
+     a time" -- the same trick the lws branch above uses.
+
+     Router PDB: minAvailable: 1, only when pd.router.replicas >= 2. With one
+     router there is no budget that makes sense (minAvailable: 1 would forbid
+     all voluntary evictions of the only front door), so it is not rendered --
+     same convention as the chart's single-replica default for engines.
+*/ -}}
+{{- $slices := int .Values.replicaCount -}}
+{{- $fullname := include "vllm.fullname" . -}}
+{{- range $s := until $slices }}
+{{- range $role := tuple "prefill" "decode" }}
+{{- $roleCfg := index $.Values.pd $role }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-{{ $role }}-s{{ $s }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app: {{ $.Release.Name }}-vllm
+  {{- with $pdb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $hasMin }}
+  {{- $raw := printf "%v" $pdb.minAvailable }}
+  minAvailable: {{ if hasSuffix "%" $raw }}{{ $raw | quote }}{{ else }}{{ atoi $raw }}{{ end }}
+  {{- else }}
+  {{- $raw := printf "%v" $pdb.maxUnavailable }}
+  maxUnavailable: {{ if hasSuffix "%" $raw }}{{ $raw | quote }}{{ else }}{{ atoi $raw }}{{ end }}
+  {{- end }}
+  {{- with $pdb.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      disaggregatedset.x-k8s.io/name: {{ $fullname }}
+      disaggregatedset.x-k8s.io/role: {{ $role }}
+      disaggregatedset.x-k8s.io/slice: {{ $s | quote }}
+{{- end }}
+{{- $routerReplicas := int ($.Values.pd.router.replicas | default 1) }}
+{{- if ge $routerReplicas 2 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-router-s{{ $s }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app: {{ $.Release.Name }}-vllm
+  {{- with $pdb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  minAvailable: 1
+  {{- with $pdb.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-vllm
+      component: router
+      slice: {{ $s | quote }}
+{{- end }}
+{{- end }}
+{{- else }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -149,4 +237,5 @@ spec:
       # lws.enabled -- both roles of every group. See the note above on why
       # workers are in here.
       app: {{ .Release.Name }}-vllm
+{{- end }}
 {{- end -}}
