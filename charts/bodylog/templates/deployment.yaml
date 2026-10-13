@@ -50,6 +50,12 @@ spec:
             - { name: TZ,                value: "{{ .Values.timezone }}" }
             - { name: BODYLOG_KEEP_DAYS,         value: "{{ .Values.retention.keepDays }}" }
             - { name: BODYLOG_DETAILS_KEEP_DAYS, value: "{{ .Values.retention.detailsKeepDays }}" }
+            # dig, not default: `0 | default 90` renders 90, because default
+            # treats zero as empty -- which would turn an explicit "disable the
+            # disk condition" into enabling it at 90%. dig only substitutes when
+            # the key is absent, so 0 reaches the listener as 0.
+            - { name: BODYLOG_DISK_USAGE_PCT, value: "{{ dig "diskUsagePct" 90 .Values.retention }}" }
+            - { name: BODYLOG_PRUNE_INTERVAL_SECONDS, value: "{{ dig "pruneIntervalSeconds" 3600 .Values.retention }}" }
             - name: BODYLOG_HTTP_TOKEN
               valueFrom:
                 secretKeyRef: { name: {{ include "bodylog.secretName" . }}, key: BODYLOG_HTTP_TOKEN }
