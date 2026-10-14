@@ -262,6 +262,11 @@
       "items": { "type": ["string", "integer", "number", "boolean"] }
     },
 
+    "promptTokensDetails": {
+      "description": "Emit --enable-prompt-tokens-details. vLLM fills usage.prompt_tokens_details.cached_tokens only when it is on, and the gateway's request log reads that field, so turning it off removes cached-token accounting from the whole chain. Set false only for an engine image whose argparse does not know the flag.",
+      "type": "boolean"
+    },
+
     "commandOverride": {
       "description": "Replaces the vLLM command line. null (the default) leaves it to the chart; defined -- including [] -- takes it over, and [] renders no command at all, i.e. the image's own ENTRYPOINT.",
       "type": ["array", "null"],
