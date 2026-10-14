@@ -180,6 +180,53 @@
         },
         "prefill": { "$ref": "#/definitions/pdRole" },
         "decode": { "$ref": "#/definitions/pdRole" },
+        "localKVOffload": {
+          "description": "L2 KV offload: spill KV from GPU to a co-deployed store (today: mooncake store on each engine pod). When enabled, the chart renders ONE --kv-transfer-config per engine as MultiConnector, wrapping the chart-derived PD connector together with MooncakeStoreConnector; renders <fullname>-mc-store-config ConfigMap mounted at /etc/mooncake on every engine pod (leader and worker, both roles); renders <fullname>-mc-master Deployment + ClusterIP Service; and sets MOONCAKE_CONFIG_PATH=/etc/mooncake/store.json in the engine env. Disable to return to today's single-connector --kv-transfer-config unchanged. The kv_role and extra_config of the store connector are NOT user-tunable (load_async/lookup_async=true are the only validated values from the reference deploy).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "backend": {
+              "description": "Only 'mooncakeStore' exists today. When a second backend lands (e.g. lmCache) it gets its own sibling block keyed off this enum.",
+              "type": "string",
+              "enum": ["mooncakeStore"]
+            },
+            "mooncakeStore": {
+              "description": "store.json delivery config. mode/metadata_server/protocol/device_name are hard-coded (architecture-level, not user-tunable); the master_server_address is always the release's own -mc-master Service. The values below are the only ones the operator should need to tune (sizing), matching the reference deploy.",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "globalSegmentSize": {
+                  "description": "Wire key: global_segment_size. Per-engine spill budget (total across GPUs on that engine's node). Reference: 100GB for 8-GPU TP8 + PP2 + 1M ctx. Keep sum > (model's per-node KV + slop) and stay under shm.sizeLimit.",
+                  "type": "string"
+                },
+                "localBufferSize": {
+                  "description": "Wire key: local_buffer_size. Per-engine RDMA registration buffer. Reference: 4GB with the same shape.",
+                  "type": "string"
+                },
+                "enableOffload": {
+                  "description": "Wire key: enable_offload. Deeper spill from RAM to disk. Off by default (the reference shape).",
+                  "type": "boolean"
+                },
+                "master": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "imageOverride": {
+                      "description": "Empty (default) uses the engine image. Override to run a different mooncake_master binary -- useful when staging a vendor-fixed master ahead of the engines, BUT version-skew is a hazard: the mooncake metaserver protocol has no cross-version handshake, so mixing master's tag against the engines' tag surfaces as silent 'store unavailable' with no wire-level diagnostic. Verify against the same-connector release notes before a partial bump; otherwise upgrade them together.",
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "repository": { "type": "string" },
+                        "tag": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
         "router": {
           "type": "object",
           "additionalProperties": false,

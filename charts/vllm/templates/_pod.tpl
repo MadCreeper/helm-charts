@@ -221,6 +221,17 @@
 {{- $backendsJson := "[" }}{{ range $i, $b := $nixlBackends }}{{ if $i }}{{ $backendsJson = printf "%s," $backendsJson }}{{ end }}{{ $backendsJson = printf "%s%q" $backendsJson $b }}{{ end }}{{ $backendsJson = printf "%s]" $backendsJson }}
 {{- $kvCfg = printf `{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"backends":%s,"http_port":%d}}` $backendsJson $nixlHttpPort }}
 {{- end }}
+{{- /* pd.localKVOffload wraps the chart-derived PD connector in MultiConnector
+       and appends the L2 store connector. The store connector's extra_config
+       is hard-coded ({load_async,lookup_async}=true -- the only values the
+       reference deploy has been validated on); the connector's own knobs are
+       snake_case wire keys and the chart deliberately does not enumerate
+       them. Emitted as ONE --kv-transfer-config; the user's own flag in
+       extraArgs is forbidden by pd-guards when this is on, so the chart's
+       flag is the only one. */}}
+{{- if and $root.Values.pd.localKVOffload.enabled (eq ($root.Values.pd.localKVOffload.backend | default "") "mooncakeStore") }}
+{{- $kvCfg = printf `{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[%s,{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true}}]}}` $kvCfg }}
+{{- end }}
 {{- $flags = append $flags (printf "--kv-transfer-config=%s" $kvCfg) }}
 {{- end }}
 {{- /* toString, so a YAML-typed entry (`- 2` under `- --tensor-parallel-size`)
@@ -276,6 +287,7 @@
 {{- $pdRole := $e.pdRole }}
 {{- $worker := $e.worker }}
 {{- $serves := $e.serves }}
+{{- $l2 := and $pdRole (not .colocate) $root.Values.pd.localKVOffload.enabled (eq ($root.Values.pd.localKVOffload.backend | default "") "mooncakeStore") }}
 {{- $oc := $e.oc }}
 {{- $pname := $e.pname }}
 {{- $hwPort := $e.hwPort }}
@@ -390,6 +402,15 @@
         (dict "name" "NCCL_IB_DISABLE" "value" "0")
         (dict "name" "NCCL_DEBUG" "value" "WARN")) }}
   {{- end }}
+  {{- /* MOONCAKE_CONFIG_PATH: where the MooncakeStoreConnector reads its
+         per-instance JSON. Chart-set when the offload is on so the values
+         file only carries the shape knobs and not the delivery plumbing.
+         Placed BEFORE the user's top-level env, which is appended after and
+         wins on any duplicate name (Kubernetes env is last-wins). */}}
+  {{- if $l2 }}
+  {{- $engineEnv = concat $engineEnv (list
+        (dict "name" "MOONCAKE_CONFIG_PATH" "value" "/etc/mooncake/store.json")) }}
+  {{- end }}
   {{- end }}
   {{- if or $engineEnv $root.Values.env }}
   env:
@@ -428,7 +449,7 @@
   securityContext:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- if or $hasModel $root.Values.volumeMounts $shmOn }}
+  {{- if or $hasModel $root.Values.volumeMounts $shmOn $l2 }}
   volumeMounts:
   {{- if $hasModel }}
   - name: model-storage
@@ -438,6 +459,11 @@
   {{- if $shmOn }}
   - name: dshm
     mountPath: /dev/shm
+  {{- end }}
+  {{- if $l2 }}
+  - name: mc-store
+    mountPath: /etc/mooncake
+    readOnly: true
   {{- end }}
   {{- with $root.Values.volumeMounts }}
   {{- toYaml . | nindent 2 }}
@@ -611,6 +637,11 @@
 {{- if eq (.mountPath | default "") "/dev/shm" }}{{ $userShm = true }}{{ end }}
 {{- end }}
 {{- $shmOn := and $root.Values.shm.enabled (not $userShm) }}
+{{- /* L2 offload: the store.json ConfigMap belongs on every engine pod
+       (leader + worker, both pd roles). The workers' GPUs hold the rest of
+       the model's KV, and the mooncake transfer engine spans every rank's
+       node at the store level, not just the leader's. */}}
+{{- $l2v := and $root.Values.pd.enabled (not $root.Values.pd.colocate) $root.Values.pd.localKVOffload.enabled (eq ($root.Values.pd.localKVOffload.backend | default "") "mooncakeStore") }}
 {{- /* A values file may already use the name this chart gives its /dev/shm
        volume, for something else entirely. Two volumes cannot share a name, so
        say so here rather than let the API server reject the pod with a message
@@ -734,7 +765,7 @@ containers:
        never makes it to podSpec (it renders merged from pd-colocate.yaml),
        so $multi and pd's A/B shape both still want hostNetwork when
        hostNetwork is set in values. */}}
-{{- if or $hasModel $hangVol $root.Values.volumes $shmOn }}
+{{- if or $hasModel $hangVol $root.Values.volumes $shmOn $l2v }}
 volumes:
 {{- if $shmOn }}
 - name: dshm
@@ -752,6 +783,11 @@ volumes:
 - name: hang-watcher-config
   configMap:
     name: {{ $root.Release.Name }}-hang-watcher
+{{- end }}
+{{- if $l2v }}
+- name: mc-store
+  configMap:
+    name: {{ include "vllm.fullname" $root }}-mc-store-config
 {{- end }}
 {{- with $root.Values.volumes }}
 {{- toYaml . | nindent 0 }}
