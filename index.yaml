@@ -1243,6 +1243,25 @@ entries:
   vllm:
   - apiVersion: v2
     appVersion: 1.0.0
+    created: "2026-10-14T06:14:50.611132045Z"
+    dependencies:
+    - condition: cart.enabled
+      name: cart
+      repository: file://../cart
+      version: 0.2.2
+    description: vLLM inference deployment -- single-node or multi-node (LeaderWorkerSet),
+      with optional cache-aware routing, autoscaling and hang detection
+    digest: b44578b234257089c353e174f1b7d76773d998379ea383f6aca920ab1033fc0a
+    home: https://github.com/modelsphere/helm-charts
+    name: vllm
+    sources:
+    - https://github.com/modelsphere/helm-charts
+    type: application
+    urls:
+    - https://github.com/modelsphere/helm-charts/releases/download/vllm-0.8.8/vllm-0.8.8.tgz
+    version: 0.8.8
+  - apiVersion: v2
+    appVersion: 1.0.0
     created: "2026-10-13T03:03:56.355194336Z"
     dependencies:
     - condition: cart.enabled
@@ -1640,4 +1659,4 @@ entries:
     urls:
     - https://github.com/modelsphere/helm-charts/releases/download/vllm-0.4.0/vllm-0.4.0.tgz
     version: 0.4.0
-generated: "2026-10-14T00:10:32.691442367Z"
+generated: "2026-10-14T06:14:50.61131603Z"
