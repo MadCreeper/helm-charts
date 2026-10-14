@@ -1,0 +1,97 @@
+{{- /* The mooncake master every engine's store.json points at. Single-replica
+       deployment by deliberate choice: the connector's contact pattern is
+       per-request-batch and light, and the master becomes Ready ~1s after
+       start vs ~190s until the engines' first contact -- a ~190x margin, so
+       a single pod with Recreate is enough. The binary is bundled inside
+       the engine image (mooncake_master lives in /usr/local/bin), so the
+       chart reuses .Values.image.{repository,tag} verbatm. HA / ordering
+       gates / quorum are out of scope -- if they become necessary, the
+       binary's -cluster_id flag is the layer to fan out at. */ -}}
+{{- if and .Values.pd.enabled (not .Values.pd.colocate) .Values.pd.localKVOffload.enabled (eq (.Values.pd.localKVOffload.backend | default "") "mooncakeStore") -}}
+{{- $fullname := include "vllm.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-mc-master
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}-vllm
+    component: mc-master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-vllm
+      component: mc-master
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-vllm
+        component: mc-master
+    spec:
+      containers:
+      - name: mooncake-master
+        image: "{{ .Values.pd.localKVOffload.mooncakeStore.master.imageOverride.repository | default .Values.image.repository }}:{{ .Values.pd.localKVOffload.mooncakeStore.master.imageOverride.tag | default .Values.image.tag }}"
+        imagePullPolicy: IfNotPresent
+        command: ["mooncake_master"]
+        args:
+        - -rpc_port=50051
+        - -rpc_thread_num=4
+        - -default_kv_lease_ttl=30000
+        - -eviction_high_watermark_ratio=0.95
+        - -eviction_ratio=0.1
+        - -logtostderr
+        ports:
+        - containerPort: 50051
+          name: rpc
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+      hostNetwork: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.schedulerName }}
+      schedulerName: {{ . }}
+      {{- end }}
+      {{- /* G4 hygiene: the master pod needs the same nvidia.com/gpu
+             NoSchedule toleration the engines get, or it pends on tainted
+             GPU-only nodes. Mirror _pod.tpl: prepend the accelerator toleration
+             unless the user's list already carries one for the same key. */ -}}
+      {{- $tols := default (list) .Values.tolerations }}
+      {{- $hasGpuTol := false }}
+      {{- range $tols }}
+      {{- if eq (.key | default "") "nvidia.com/gpu" }}{{- $hasGpuTol = true }}{{- end }}
+      {{- end }}
+      {{- if not $hasGpuTol }}
+      {{- $tols = concat (list (dict "key" "nvidia.com/gpu" "operator" "Exists" "effect" "NoSchedule")) $tols }}
+      {{- end }}
+      {{- with $tols }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-mc-master
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}-vllm
+    component: mc-master
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Release.Name }}-vllm
+    component: mc-master
+  ports:
+  - name: rpc
+    port: 50051
+    targetPort: 50051
+{{- end -}}

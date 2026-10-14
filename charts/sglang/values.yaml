@@ -257,6 +257,21 @@ pd:
     #  - if an engine pod restarts with a new IP, the router keeps
     #    stale argv; staleness self-healing is a separate PR.
 
+  localKVOffload:
+    # L2 KV offload placeholder. Same shape as ./vllm's pd.localKVOffload
+    # (which is fully implemented there) so a values file written for one
+    # chart can be pointed at the other without a rename. The sglang side
+    # is NOT implemented: pd-guards fails the render whenever enabled=true,
+    # so a user who flips this expecting vllm-mooncake behaviour gets an
+    # explicit error instead of a silently-ignored knob. The block lives
+    # here so values.yaml stays the two charts' contract.
+    enabled: false
+    backend: mooncakeStore
+    mooncakeStore:
+      globalSegmentSize: "100GB"
+      localBufferSize: "4GB"
+      enableOffload: false
+
 image:
   repository: "lmsysorg/sglang"
   tag: "latest"

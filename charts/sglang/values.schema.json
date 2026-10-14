@@ -142,6 +142,27 @@
         "transferBackend": { "type": "string", "enum": ["mooncake"] },
         "prefill": { "$ref": "#/definitions/pdRole" },
         "decode": { "$ref": "#/definitions/pdRole" },
+        "localKVOffload": {
+          "description": "Placeholder for parity with charts/vllm. The vllm chart implements L2 KV offload (multi-connector wrapping + ConfigMap + mc-master); the sglang chart does NOT, and pd-guards fails the render whenever this is enabled. Block kept here so the two charts' values surfaces stay aligned for a future sglang implementation.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "backend": {
+              "type": "string",
+              "enum": ["mooncakeStore"]
+            },
+            "mooncakeStore": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "globalSegmentSize": { "type": "string" },
+                "localBufferSize": { "type": "string" },
+                "enableOffload": { "type": "boolean" }
+              }
+            }
+          }
+        },
         "router": {
           "type": "object",
           "additionalProperties": false,

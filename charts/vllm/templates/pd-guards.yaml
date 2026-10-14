@@ -118,4 +118,54 @@
 {{- end -}}
 {{- end -}}
 
+{{- /* pd.localKVOffload: only the DisaggregatedSet shape supports it. The
+       colocate render path would need the colocate template itself to
+       thread the store.json volume + MOONCAKE_CONFIG_PATH through the
+       merged pod, and no reference deploy has validated that shape.
+       Fail loudly rather than silently ignore. */ -}}
+{{- $l2 := $pd.localKVOffload -}}
+{{- if and $l2 $l2.enabled -}}
+{{- if $pd.colocate -}}
+{{- fail "vllm: pd.localKVOffload requires the A/B DisaggregatedSet shape (pd.colocate: false). The reference offloads at the engine pod level, with a config map mounted at /etc/mooncake; colocate renders merged pods and would need a separate port-name + path scheme that has not been validated." -}}
+{{- end -}}
+{{- if ne ($l2.backend | default "") "mooncakeStore" -}}
+{{- fail (printf "vllm: pd.localKVOffload.backend must be \"mooncakeStore\" (got %q). Only mooncakeStore exists today; new backends land as sibling keys keyed off this enum." ($l2.backend | default "")) -}}
+{{- end -}}
+{{- /* The user's own --kv-transfer-config in extraArgs COEXISTING with
+       the chart's wrapper is how the reference reached L2 before this
+       knob existed (vLLM argparse last-wins). Now that the chart owns
+       the wrapper, the shadow path is no longer idempotent -- two
+       MultiConnectors on the wire would leave the store connector
+       configured by whichever flag argparse happened to honor, which
+       is the silent-wrong-cluster bug again. Refuse it. */ -}}
+{{- range $arg := .Values.extraArgs -}}
+{{- if hasPrefix "--kv-transfer-config" (toString $arg) -}}
+{{- fail "vllm: pd.localKVOffload.enabled renders --kv-transfer-config for you (as a MultiConnector wrapping the chart-derived PD connector together with MooncakeStoreConnector). Remove --kv-transfer-config from extraArgs; tune the shape via pd.localKVOffload.mooncakeStore.* instead." -}}
+{{- end -}}
+{{- end -}}
+{{- range $roleCfg := list $pd.prefill $pd.decode -}}
+{{- range $arg := ($roleCfg.extraArgs | default list) -}}
+{{- if hasPrefix "--kv-transfer-config" (toString $arg) -}}
+{{- fail "vllm: pd.localKVOffload.enabled renders --kv-transfer-config for you (as a MultiConnector wrapping the chart-derived PD connector together with MooncakeStoreConnector). Remove --kv-transfer-config from pd.<role>.extraArgs; tune the shape via pd.localKVOffload.mooncakeStore.* instead." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* The chart's mount at /etc/mooncake is named mc-store. A user volume
+       of that name would collide (two volumes, same name = API reject),
+       and trapping it here lets us say why the name is reserved. Mirrors
+       the dshm guard in _pod.tpl. The /etc/mooncake path itself also must
+       not be mounted by the user -- two mounts on one path is a hard
+       pod-spec reject with an error that does not mention this chart. */ -}}
+{{- range .Values.volumes -}}
+{{- if eq (.name | default "") "mc-store" -}}
+{{- fail "vllm: volumes has an entry named \"mc-store\", which is the name the chart reserves for its own /etc/mooncake ConfigMap mount when pd.localKVOffload.enabled. Rename that entry, or drop it (the chart owns the store's delivery)." -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.volumeMounts -}}
+{{- if eq (.mountPath | default "") "/etc/mooncake" -}}
+{{- fail "vllm: volumeMounts has an entry at /etc/mooncake, which the chart mounts itself when pd.localKVOffload.enabled (as the mc-store ConfigMap carrying store.json). Drop the user mount." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- end -}}
