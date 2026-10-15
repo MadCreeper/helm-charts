@@ -257,20 +257,70 @@ pd:
     #  - if an engine pod restarts with a new IP, the router keeps
     #    stale argv; staleness self-healing is a separate PR.
 
-  localKVOffload:
-    # L2 KV offload placeholder. Same shape as ./vllm's pd.localKVOffload
-    # (which is fully implemented there) so a values file written for one
-    # chart can be pointed at the other without a rename. The sglang side
-    # is NOT implemented: pd-guards fails the render whenever enabled=true,
-    # so a user who flips this expecting vllm-mooncake behaviour gets an
-    # explicit error instead of a silently-ignored knob. The block lives
-    # here so values.yaml stays the two charts' contract.
-    enabled: false
-    backend: mooncakeStore
-    mooncakeStore:
-      globalSegmentSize: "100GB"
-      localBufferSize: "4GB"
-      enableOffload: false
+localKVOffload:
+  # Hierarchical cache: spill KV from GPU to a co-located host-memory tier
+  # (ram-tier "L2"), and optionally further to a storage backend (L3). Off
+  # by default. Top-level, same semantics as ./vllm's localKVOffload -- but
+  # the engineering is per-chart: sglang renders a store backend list via
+  # plain --hicache-* argv, while vllm wraps a MooncakeStoreConnector into
+  # the engine's --kv-transfer-config.
+  #
+  # Render rule: only knobs the user sets are appended to argv. The chart
+  # never invents defaults; sglang's engine defaults apply wherever a knob
+  # is unset. A bare `enabled: true` produces just
+  # `--enable-hierarchical-cache`; each knob the user sets under hicache:
+  # adds one more `--<key>=<value>` flag in the order listed.
+  #
+  # Combination mischief (e.g. buffer_only without a storage backend) is
+  # left to sglang's own argparse validation -- the chart does NOT double
+  # as a validator.
+  enabled: false
+  # Only 'hicache' today.
+  backend: hicache
+  hicache:
+    # Keys below mirror sglang argv spelled verbatim after a `--hicache-`
+    # prefix (so 'write-policy' below becomes --hicache-write-policy). Type
+    # information taken from refs/sglang-main/python/sglang/srt/arg_groups/
+    # fields/memory.py at the pinned upstream tag. page-size is NOT in
+    # this block on purpose -- it's a scheduler-level knob (see
+    # arg_groups/fields/schedule.py), not hicache-specific. Use top-level
+    # extraArgs for --page-size=64 if you need it.
+    # enum. 'cache' (host RAM is a persistent tier) or 'buffer_only'
+    # (transient staging to a storage backend; requires
+    # hicache-storage-backend). Engine default cache.
+    host-memory-mode: null
+    # float. Host-pool size as a multiple of the GPU pool. Engine default
+    # 2.0 (cache mode) / 1.2 (buffer_only) when unset.
+    ratio: null
+    # int. Host-pool size in gigabytes. Overrides ratio when set. Engine
+    # default 0 (unset).
+    size: null
+    # float in (0, 1]. Fraction of visible/cgroup host memory usable by
+    # hicache, AFTER a 10 GiB engine reserve. Engine default 0.8.
+    host-memory-fraction: null
+    # enum. GPU -> CPU write policy. Engine default write_through.
+    write-policy: null
+    # enum. CPU <-> GPU transport. direct / kernel / kernel_ascend. Engine
+    # default kernel.
+    io-backend: null
+    # enum. Host memory pool layout. Engine default page_first.
+    mem-layout: null
+    # enum. Optional storage backend (L3). file / mooncake / hf3fs /
+    # npu_memcache / nixl / aibrix / dynamic / eic / simm / mori / shm /
+    # tensorcast / seaweedfs / sim. Engine default: no storage backend
+    # (hicache stays RAM-resident).
+    storage-backend: null
+    # enum. When prefetch stops. Engine default timeout.
+    storage-prefetch-policy: null
+    # string. JSON dict or @file path. Storage-backend-specific extra
+    # config. Pass-through.
+    storage-backend-extra-config: null
+    # int. Scheduling-loop polls a queued request waits before re-issuing
+    # a storage availability check. Engine default 8.
+    storage-prefetch-retry-poll-interval: null
+    # int. Max re-issues before the request is admitted on device data
+    # alone. Engine default 8.
+    storage-prefetch-retry-max-attempts: null
 
 image:
   repository: "lmsysorg/sglang"

@@ -102,12 +102,4 @@
 {{- end -}}
 {{- end -}}
 
-{{- /* pd.localKVOffload is a placeholder on this chart: the values block
-       keeps the two charts' surfaces aligned for a future implementation,
-       but the render path does not exist here. Fail rather than let a
-       user flipping the knob expect vllm-mooncake behaviour. */ -}}
-{{- if $pd.localKVOffload.enabled -}}
-{{- fail "sglang: pd.localKVOffload is not implemented for this chart -- only the vllm chart (charts/vllm) renders L2 offload today. Drop the flag or switch charts." -}}
-{{- end -}}
-
 {{- end -}}
