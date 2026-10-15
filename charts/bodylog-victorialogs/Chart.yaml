@@ -1,0 +1,22 @@
+apiVersion: v2
+name: bodylog-victorialogs
+description: "Searchable body logs: Vector ships bodylog's JSONL into VictoriaLogs, registered as a Grafana datasource"
+home: https://github.com/modelsphere/helm-charts
+sources:
+  - https://github.com/modelsphere/helm-charts
+  - https://github.com/VictoriaMetrics/VictoriaLogs
+  - https://github.com/vectordotdev/vector
+type: application
+version: 0.1.0
+appVersion: "v1.53.0"
+keywords:
+  - bodylog
+  - victorialogs
+  - vector
+  - logs
+dependencies:
+  - name: victoria-logs-single
+    alias: victorialogs
+    version: 0.13.10
+    repository: oci://ghcr.io/victoriametrics/helm-charts
+    condition: victorialogs.enabled

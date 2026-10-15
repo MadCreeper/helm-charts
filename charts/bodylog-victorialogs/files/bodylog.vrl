@@ -1,0 +1,166 @@
+# Turns one bodylog JSONL record into one VictoriaLogs entry: every field of the
+# record is kept, a few are normalised for querying, and _msg gets a one-line
+# summary. Records that are not JSON are dropped.
+
+# 1. Parse the record.
+parsed, err = parse_json(.message)
+if err != null {
+  abort
+}
+. = parsed
+
+# 2. model and token usage, preferably from resp_meta.
+#
+#    The presence of usage.prompt_tokens is what says the usage object was
+#    filled in: a streaming response can carry resp_meta.model while its usage
+#    object is still empty, and reading that as zeros would hide real counts
+#    that the response body does have.
+#
+#    total_tokens is derived with an explicit `exists`, not with `??`: to_int(null)
+#    returns 0 without erroring, so `?? (prompt + completion)` would never fire
+#    on a missing field and the sum would be recorded as 0.
+have_tokens = false
+if is_object(.resp_meta) {
+  if exists(.resp_meta.model) {
+    .model = .resp_meta.model
+  }
+  if is_object(.resp_meta.usage) && exists(.resp_meta.usage.prompt_tokens) {
+    pt = to_int(.resp_meta.usage.prompt_tokens) ?? 0
+    ct = to_int(.resp_meta.usage.completion_tokens) ?? 0
+    .prompt_tokens = pt
+    .completion_tokens = ct
+    if exists(.resp_meta.usage.total_tokens) {
+      .total_tokens = to_int(.resp_meta.usage.total_tokens) ?? (pt + ct)
+    } else {
+      .total_tokens = pt + ct
+    }
+    have_tokens = true
+  }
+}
+
+# 3. Fallback: the response body -- for the model, for the token counts, or for
+#    just one of them. The two are decided separately, so an empty usage object
+#    next to a present resp_meta.model still gets its counts from the body.
+if (!exists(.model) || !have_tokens) && is_string(.resp_body) {
+  resp, err = parse_json(.resp_body)
+  if err == null && is_object(resp) {
+    if !exists(.model) && exists(resp.model) {
+      .model = resp.model
+    }
+    if !have_tokens && is_object(resp.usage) && exists(resp.usage.prompt_tokens) {
+      pt = to_int(resp.usage.prompt_tokens) ?? 0
+      ct = to_int(resp.usage.completion_tokens) ?? 0
+      .prompt_tokens = pt
+      .completion_tokens = ct
+      if exists(resp.usage.total_tokens) {
+        .total_tokens = to_int(resp.usage.total_tokens) ?? (pt + ct)
+      } else {
+        .total_tokens = pt + ct
+      }
+      have_tokens = true
+    }
+  }
+}
+
+# 4. Fallback: the model the client asked for.
+if !exists(.model) && is_string(.req_body) {
+  req, err = parse_json(.req_body)
+  if err == null && is_object(req) {
+    if exists(req.model) {
+      .model = req.model
+    }
+  }
+}
+
+if !exists(.model) {
+  .model = "unknown"
+}
+
+# 5. peer as ip:port; a loopback peer is replaced with the router's own address.
+peer_full = "unknown"
+if is_string(.peer) {
+  res, err = parse_regex(.peer, r'^(?P<ip>[^:]+):(?P<port>\d+)$')
+  if err == null && exists(res.ip) && exists(res.port) {
+    ip_str = to_string(res.ip)
+    port_str = to_string(res.port)
+    if (ip_str == "127.0.0.1" || ip_str == "localhost") && is_string(.source_addr) && .source_addr != "" {
+      ip_str = to_string!(.source_addr)
+    }
+    peer_full = ip_str + ":" + port_str
+  } else {
+    peer_full = to_string!(.peer)
+  }
+}
+
+# 6. Upstream address without the scheme.
+target_addr = "unknown"
+if is_string(.forwarded_to) {
+  target_clean, err = replace(.forwarded_to, r'^https?://', "")
+  if err == null {
+    target_addr = target_clean
+  }
+}
+
+# 7. Token counts for the summary.
+prompt_str = "0"
+if exists(.prompt_tokens) {
+  prompt_str = to_string!(.prompt_tokens)
+} else if is_object(.resp_meta) && is_object(.resp_meta.usage) && exists(.resp_meta.usage.prompt_tokens) {
+  prompt_str = to_string!(.resp_meta.usage.prompt_tokens)
+}
+
+cache_str = "0"
+if is_object(.resp_meta) && is_object(.resp_meta.usage) && is_object(.resp_meta.usage.prompt_tokens_details) && exists(.resp_meta.usage.prompt_tokens_details.cached_tokens) {
+  cache_str = to_string!(.resp_meta.usage.prompt_tokens_details.cached_tokens)
+} else if exists(.cached_tokens) {
+  cache_str = to_string!(.cached_tokens)
+}
+
+output_str = "0"
+if exists(.completion_tokens) {
+  output_str = to_string!(.completion_tokens)
+} else if is_object(.resp_meta) && is_object(.resp_meta.usage) && exists(.resp_meta.usage.completion_tokens) {
+  output_str = to_string!(.resp_meta.usage.completion_tokens)
+}
+
+# 8. Time to first token and status.
+ttft_str = "0"
+if exists(.first_chunk_t) {
+  ttft_str = to_string!(.first_chunk_t)
+}
+
+status_str = "0"
+if exists(.status) {
+  status_str = to_string!(.status)
+}
+
+# 9. The summary line, e.g.
+#    kimi-k2.6:10.0.0.1:8063 --> 10.0.0.2:8051 prompt:5905 cache:3776 output:2227 TTFT:0.27s status:200
+model_str = to_string!(.model)
+._msg = model_str + ":" + peer_full + " --> " + target_addr + " prompt:" + prompt_str + " cache:" + cache_str + " output:" + output_str + " TTFT:" + ttft_str + "s status:" + status_str
+
+# 10. Keep the entry under VictoriaLogs' 2MiB limit per entry: larger entries are
+#     rejected at ingestion. Inline base64 images are cut to their first 10
+#     characters, and whatever is still too long is truncated.
+if exists(.req_body) {
+  body_raw = ""
+  if is_string(.req_body) {
+    body_raw = to_string!(.req_body)
+  } else {
+    body_raw = encode_json(.req_body)
+  }
+
+  body_cleaned = replace(
+    body_raw,
+    r'(data:image/[a-zA-Z0-9+.-]+;base64,)([A-Za-z0-9+/=]{10})[A-Za-z0-9+/=]{10,}',
+    "${1}${2}...[BASE64_TRUNCATED]"
+  )
+
+  max_body_len = 1500000
+  if length(body_cleaned) > max_body_len {
+    .req_body = slice!(body_cleaned, 0, max_body_len) + "...[TRUNCATED_EXCEEDS_1.5M]"
+    .req_body_truncated = "true"
+  } else {
+    .req_body = body_cleaned
+  }
+}

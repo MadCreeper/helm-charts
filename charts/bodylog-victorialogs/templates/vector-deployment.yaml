@@ -1,0 +1,77 @@
+# One Vector next to the bodylog pod. A Deployment with podAffinity rather than a
+# DaemonSet: the DaemonSet controller ignores podAffinity and would leave a Pending
+# pod on every other node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bodylog-victorialogs.fullname" . }}-vector
+  labels: {{- include "bodylog-victorialogs.vectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: two pods sharing one set of read positions would
+  # ship the same lines twice, and with a ReadWriteOnce claim the second would
+  # never start anyway.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "bodylog-victorialogs.vectorSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "bodylog-victorialogs.vectorSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/vector-configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{ end }}
+    spec:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              namespaces: [{{ .Values.bodylog.namespace | default .Release.Namespace | quote }}]
+              labelSelector:
+                matchLabels: {{- toYaml .Values.bodylog.podLabels | nindent 18 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vector
+          image: "{{ .Values.vector.image.repository }}:{{ .Values.vector.image.tag }}"
+          imagePullPolicy: {{ .Values.vector.image.pullPolicy }}
+          args: ["--config", "/etc/vector/vector.yaml"]
+          ports:
+            - { name: api, containerPort: 8686 }
+          readinessProbe:
+            httpGet: { path: /health, port: api }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: api }
+            periodSeconds: 30
+            failureThreshold: 5
+          resources: {{- toYaml .Values.vector.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/vector, readOnly: true }
+            - { name: bodylog, mountPath: /data/bodylog, readOnly: true }
+            - { name: state, mountPath: {{ include "bodylog-victorialogs.statePath" . | quote }} }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "bodylog-victorialogs.fullname" . }}-vector
+        - name: bodylog
+          {{- if .Values.bodylog.hostPath }}
+          hostPath: { path: {{ .Values.bodylog.hostPath | quote }}, type: Directory }
+          {{- else }}
+          persistentVolumeClaim: { claimName: {{ .Values.bodylog.existingClaim | quote }}, readOnly: true }
+          {{- end }}
+        # Read positions and the sink's buffer. A volume so that they follow the
+        # pod when podAffinity moves it to the bodylog pod's new node; an emptyDir
+        # here means every restart re-applies vector.readFrom.
+        - name: state
+          {{- if not .Values.vector.state.enabled }}
+          emptyDir: {}
+          {{- else if .Values.vector.state.hostPath }}
+          hostPath: { path: {{ .Values.vector.state.hostPath | quote }}, type: DirectoryOrCreate }
+          {{- else }}
+          persistentVolumeClaim: { claimName: {{ include "bodylog-victorialogs.stateClaimName" . | quote }} }
+          {{- end }}

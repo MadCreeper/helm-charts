@@ -1,0 +1,24 @@
+{{- if .Values.grafana.datasource.enabled }}
+{{- $ds := .Values.grafana.datasource }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bodylog-victorialogs.fullname" . }}-grafana-datasource
+  namespace: {{ $ds.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "bodylog-victorialogs.labels" . | nindent 4 }}
+    {{- /* `with`, not a bare toYaml: an emptied map (labels: with nothing under
+           it) renders as the word `null` and the install fails on a YAML parse
+           error pointing at this template rather than at the value. */}}
+    {{- with $ds.labels }}{{ toYaml . | nindent 4 }}{{ end }}
+data:
+  {{ include "bodylog-victorialogs.fullname" . }}.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: {{ $ds.name | quote }}
+        uid: {{ $ds.uid | quote }}
+        type: victoriametrics-logs-datasource
+        access: proxy
+        url: {{ include "bodylog-victorialogs.vlUrl" . }}
+        isDefault: {{ $ds.isDefault }}
+{{- end }}

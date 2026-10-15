@@ -1,0 +1,130 @@
+# Where bodylog writes its hourly JSONL (<dataDir>/<YYYY-MM-DD>/<HH>.jsonl).
+# Vector runs on the same node as the bodylog pod (podAffinity, below) and reads
+# those files directly, so give exactly one of hostPath / existingClaim -- whichever
+# the bodylog chart was installed with (its persistence.hostPath or the PVC).
+bodylog:
+  hostPath: ""
+  existingClaim: ""             # a ReadWriteOnce claim works: both pods share the node
+  # The bodylog pod to follow. Empty namespace means this release's namespace.
+  namespace: ""
+  podLabels:
+    app.kubernetes.io/name: bodylog
+
+# VictoriaLogs (chart victoria-logs-single, aliased). Set enabled=false and
+# victorialogsUrl to ship into a VictoriaLogs you already run instead.
+victorialogs:
+  enabled: true
+  server:
+    # A bare number here is MONTHS; always give a unit.
+    retentionPeriod: 14d
+    extraArgs:
+      # Body-log records carry whole request and response bodies, so the 256KB
+      # default would skip most long-prompt requests at ingestion. Just under 2MB
+      # and not higher: VictoriaLogs ignores any entry whose estimated JSON length
+      # exceeds a hardcoded 2MiB (maxUncompressedBlockSize, records are stored in
+      # 2MB blocks), so a larger value here only moves where an oversize record
+      # dies -- from a skip the reader counts in vl_too_long_lines_skipped_total to
+      # a silent return in the storage layer that has no metric at all.
+      insert.maxLineSizeBytes: "2000000"
+    persistentVolume:
+      enabled: true
+      # Measured: ~10GB/hour of raw records stores as ~12GB/day, so 14 days ~ 170GB.
+      size: 100Gi
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 8Gi }
+victorialogsUrl: ""             # e.g. http://victorialogs.logging.svc:9428 (only when enabled=false)
+
+vector:
+  image:
+    repository: docker.io/timberio/vector
+    tag: 0.58.0-distroless-libc
+    pullPolicy: IfNotPresent
+  # "end" ships only what is written after Vector first starts. "beginning" also
+  # ships the current day's files, which on a busy router is hundreds of GB.
+  readFrom: end
+  # Records reach ~11MB; longer lines are dropped at the source. Deliberately much
+  # larger than what VictoriaLogs accepts (2MB): the VRL can only shrink a record
+  # Vector has read, so reading has to come first and the truncation second.
+  maxLineBytes: 16777216
+  # Indexed stream fields: keep them low-cardinality.
+  streamFields: [method, status, model]
+  # Field that carries the request time. Empty stamps entries with ship time.
+  timeField: ts
+  # The VRL program for each record. Empty uses files/bodylog.vrl.
+  vrl: ""
+
+  # Vector's own state -- the read positions and the sink's buffer -- on a volume
+  # that follows the pod.
+  #
+  # It has to follow the pod, not the node. podAffinity moves Vector whenever the
+  # bodylog pod moves, and on a node with no read positions `readFrom: end` seeks
+  # to the end of the file bodylog is writing: everything already in today's file
+  # is never shipped, silently, and on a busy router that is gigabytes.
+  #
+  # Called `state` rather than `persistence` because victoria-logs-single bundles
+  # a vector subchart with a `persistence` of its own: Helm coalesces the two and
+  # reports the type conflict on every render.
+  state:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""            # empty: the cluster's default class
+    # One replica, and the update strategy is Recreate, so ReadWriteOnce also
+    # makes a second reader on the same positions impossible by construction.
+    accessMode: ReadWriteOnce
+    # The read positions are a few hundred bytes per file; this is sized for
+    # buffer.maxSize below, which must fit with room to spare.
+    size: 10Gi
+    # Last resort for a cluster with no dynamic provisioner: a node directory,
+    # which does not follow the pod. Read the paragraph above before using it.
+    hostPath: ""
+
+  # The sink's buffer, on the same volume as the read positions above.
+  #
+  # `disk` is what makes a record durable before VictoriaLogs has taken it. That
+  # matters when Vector restarts in the middle of an outage: a memory buffer loses
+  # what it is holding, and bodylog may by then have archived and deleted the file
+  # those records came from, so there is nothing left to re-read. It also bounds
+  # Vector's memory by the buffer rather than by the length of the outage.
+  #
+  # How much of an outage the buffer absorbs is maxSize divided by the record rate
+  # (~2GB/hour on a busy router). Past that, whenFull decides: `block` stops
+  # reading (nothing lost, but reading is paused), `drop_newest` keeps reading and
+  # loses the overflow.
+  buffer:
+    type: disk                  # disk | memory
+    maxSize: 8589934592         # 8GiB. Vector's minimum for a disk buffer is 256MiB.
+    whenFull: block             # block | drop_newest
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { memory: 2Gi }
+
+grafana:
+  # A ConfigMap that Grafana's datasource sidecar (kube-prometheus-stack) loads.
+  # Grafana also needs the victoriametrics-logs-datasource plugin -- see README.
+  datasource:
+    enabled: true
+    namespace: monitoring       # the sidecar watches Grafana's own namespace by default
+    labels:
+      grafana_datasource: "1"
+    name: VictoriaLogs
+    uid: victorialogs
+    isDefault: false
+
+# helm test: VictoriaLogs answers at the URL Vector and Grafana are configured with,
+# and its query API works. Set expectRecordsWithin (e.g. 1h) on a router with steady
+# traffic to also require that records arrived in that window.
+test:
+  # repository and tag apart, like vector.image above: an air-gapped install has
+  # to point the repository at its own registry, and a single string would make
+  # it restate the tag -- which is how a pinned tag drifts from the chart.
+  image:
+    repository: docker.io/curlimages/curl
+    tag: 8.11.1
+  expectRecordsWithin: ""
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+nameOverride: ""
+fullnameOverride: ""
