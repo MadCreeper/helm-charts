@@ -191,6 +191,26 @@
 {{- $flags = append $flags "--disaggregation-ib-device=${MOONCAKE_IB_DEVICE}" }}
 {{- $expand = append $expand (last $flags) }}
 {{- end }}
+{{- /* localKVOffload.backend=hicache: append --enable-hierarchical-cache when
+       enabled, and every user-set knob under hicache: verbatim as
+       --hicache-<key>=<value> (the values key IS the argv suffix, so
+       'write-policy' maps to --hicache-write-policy). Knobs the user leaves
+       null simply do not appear -- sglang's engine defaults apply.
+       Compatibility between knobs is the engine's argparse/hook check,
+       not the chart's. */}}
+{{- $l2 := and $root.Values.localKVOffload.enabled (eq ($root.Values.localKVOffload.backend | default "") "hicache") }}
+{{- if $l2 }}
+{{- $flags = append $flags "--enable-hierarchical-cache" }}
+{{- range $key, $val := $root.Values.localKVOffload.hicache }}
+{{- /* kindIs-invalid means the key is missing entirely (unset). Anything
+       else -- including 0 / 0.0 / "" -- is what the user set, and lands
+       on the wire verbatim. Truthiness checks would silently eat the
+       "disabled with 0" class of values. */}}
+{{- if not (kindIs "invalid" $val) }}
+{{- $flags = append $flags (printf "--hicache-%s=%v" $key $val) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- /* toString, so a YAML-typed entry (`- 8` under `- --tp`) reaches the pod as
        the string the API server requires rather than an int it rejects. */}}
 {{- range $root.Values.extraArgs }}

@@ -142,27 +142,6 @@
         "transferBackend": { "type": "string", "enum": ["mooncake"] },
         "prefill": { "$ref": "#/definitions/pdRole" },
         "decode": { "$ref": "#/definitions/pdRole" },
-        "localKVOffload": {
-          "description": "Placeholder for parity with charts/vllm. The vllm chart implements L2 KV offload (multi-connector wrapping + ConfigMap + mc-master); the sglang chart does NOT, and pd-guards fails the render whenever this is enabled. Block kept here so the two charts' values surfaces stay aligned for a future sglang implementation.",
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "backend": {
-              "type": "string",
-              "enum": ["mooncakeStore"]
-            },
-            "mooncakeStore": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "globalSegmentSize": { "type": "string" },
-                "localBufferSize": { "type": "string" },
-                "enableOffload": { "type": "boolean" }
-              }
-            }
-          }
-        },
         "router": {
           "type": "object",
           "additionalProperties": false,
@@ -179,6 +158,76 @@
             },
             "affinityReplace": { "type": ["object", "null"] },
             "tolerationsReplace": { "type": ["array", "null"] }
+          }
+        }
+      }
+    },
+
+    "localKVOffload": {
+      "description": "sglang Hierarchical cache: spill KV from GPU to host memory (L2), optionally further to a storage backend (L3). Render rule: the chart emits --enable-hierarchical-cache when enabled=true and appends --hicache-<key>=<value> for each knob the user sets under hicache:. Keys are spelled snake/hyphen to match argv (e.g. values 'write-policy' -> argv --hicache-write-policy). Unset knobs defer to engine defaults; the chart does not duplicate sglang's compatibility validation. page-size is NOT here -- it's a scheduler knob in arg_groups/fields/schedule.py, set via top-level extraArgs if needed.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "backend": {
+          "type": "string",
+          "enum": ["hicache"]
+        },
+        "hicache": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "host-memory-mode": {
+              "type": ["string", "null"],
+              "enum": ["cache", "buffer_only", null]
+            },
+            "ratio": {
+              "description": "Host pool size as a multiple of the GPU pool (2.0 cache mode default, 1.2 buffer_only).",
+              "type": ["number", "null"]
+            },
+            "size": {
+              "description": "Host pool size in gigabytes. Overrides ratio when set.",
+              "type": ["integer", "null"],
+              "minimum": 1
+            },
+            "host-memory-fraction": {
+              "description": "Fraction of visible host memory usable by hicache after a 10 GiB engine reserve. Engine default 0.8.",
+              "type": ["number", "null"],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "write-policy": {
+              "type": ["string", "null"],
+              "enum": ["write_back", "write_through", "write_through_selective", null]
+            },
+            "io-backend": {
+              "type": ["string", "null"],
+              "enum": ["direct", "kernel", "kernel_ascend", null]
+            },
+            "mem-layout": {
+              "type": ["string", "null"],
+              "enum": ["layer_first", "page_first", "page_first_direct", "page_first_kv_split", "page_head", null]
+            },
+            "storage-backend": {
+              "type": ["string", "null"],
+              "enum": ["file", "sim", "mooncake", "npu_memcache", "hf3fs", "nixl", "aibrix", "dynamic", "eic", "simm", "mori", "shm", "tensorcast", "seaweedfs", null]
+            },
+            "storage-prefetch-policy": {
+              "type": ["string", "null"],
+              "enum": ["best_effort", "wait_complete", "timeout", null]
+            },
+            "storage-backend-extra-config": {
+              "description": "JSON dict or @file path, pass-through.",
+              "type": ["string", "null"]
+            },
+            "storage-prefetch-retry-poll-interval": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
+            "storage-prefetch-retry-max-attempts": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            }
           }
         }
       }
