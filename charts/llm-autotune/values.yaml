@@ -149,11 +149,12 @@ llmbench:
   benchmarkSlug: autotune-screen-v1
   # The VictoriaLogs store of the gateway's request logs that replay datasets
   # are collected from (Automatic Tuning > Datasets), as LLMBench's pods reach
-  # it. The default is where the bodylog-victorialogs chart
-  # (github.com/modelsphere/helm-charts) serves it when installed into the
-  # `logging` namespace, as its README does. Empty = the dataset form asks.
+  # it. The default is where the modelsphere install flow puts the
+  # bodylog-victorialogs chart: namespace `llm-route`, next to bodylog itself,
+  # under the Service name that chart pins. Installed anywhere else, only the
+  # namespace changes. Empty = the dataset form asks.
   # LLMBench needs its collector on: datasets.enabled and datasetBuilder.enabled.
-  victoriaLogsUrl: "http://victorialogs.logging:9428"
+  victoriaLogsUrl: "http://victorialogs.llm-route:9428"
 
 # The GPU cluster runs land on.
 gpuCluster:
