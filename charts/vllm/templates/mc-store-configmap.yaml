@@ -1,12 +1,13 @@
 {{- /* Mooncake store.json as a release-owned ConfigMap. The
        MooncakeStoreConnector (rendered onto the engine's --kv-transfer-config
-       when pd.localKVOffload.enabled) reads its per-instance config from
+       when localKVOffload.enabled) reads its per-instance config from
        MOONCAKE_CONFIG_PATH, which the chart sets to /etc/mooncake/store.json.
        The master_server_address is this release's own -mc-master Service --
-       federated cross-release stores are out of scope for v1. */ -}}
-{{- if and .Values.pd.enabled (not .Values.pd.colocate) .Values.pd.localKVOffload.enabled (eq (.Values.pd.localKVOffload.backend | default "") "mooncakeStore") -}}
+       federated cross-release stores are out of scope for v1. Orthogonal to
+       pd.enabled: the store connector is an engine feature, not a pd one. */ -}}
+{{- if and (not .Values.pd.colocate) .Values.localKVOffload.enabled (eq (.Values.localKVOffload.backend | default "") "mooncakeStore") -}}
 {{- $fullname := include "vllm.fullname" . -}}
-{{- $cfg := .Values.pd.localKVOffload.mooncakeStore -}}
+{{- $cfg := .Values.localKVOffload.mooncakeStore -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

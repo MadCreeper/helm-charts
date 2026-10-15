@@ -183,6 +183,28 @@
 {{- $flags = append $flags "--headless" }}
 {{- end }}
 {{- end }}
+{{- /* --kv-transfer-config is emitted when EITHER the engine is a pd role
+       (the PD transfer connector is chart-derived from pd.<role>.<backend>.*)
+       OR localKVOffload is on (MooncakeStoreConnector alone or wrapped with
+       the PD connector). The two axes are independent; recent history had
+       them coupled under pd.*, which was wrong -- l2 is an engine feature,
+       not a pd feature. Combinations:
+
+         pd off, l2 off     -> no flag at all (a plain vLLM engine).
+         pd off, l2 on      -> MooncakeStoreConnector alone (plain
+                               single-connector flag, no MultiConnector).
+         pd on,  l2 off     -> NixlConnector or MooncakeConnector alone (the
+                               pd.transferBackend-driven behavior).
+         pd on,  l2 on      -> ONE MultiConnector wrapping [chart-derived PD
+                               connector, MooncakeStoreConnector] emitted as
+                               a single --kv-transfer-config.
+
+       The store connector's extra_config is hard-coded
+       ({load_async,lookup_async}=true -- the only values the reference
+       deploy has been validated on); the connector's own knobs are
+       snake_case wire keys and the chart deliberately does not enumerate
+       them. */}}
+{{- $pdKvCfg := "" }}
 {{- if $pdRole }}
 {{- /* The connector wiring every pd engine carries. kv_role is "kv_both"
        on both engines -- vLLM 0.24 has deprecated producer/consumer-split
@@ -193,7 +215,6 @@
        any user extraArgs, so a user's own --kv-transfer-config (e.g. for an
        L2-cache multi-connector config) can override it last-wins. */}}
 {{- $backend := $root.Values.pd.transferBackend | default "nixl" }}
-{{- $kvCfg := "" }}
 {{- if eq $backend "mooncake" }}
 {{- /* MooncakeConnector.__init__ reads snake_case keys out of
        kv_connector_extra_config and drops unknown keys silently -- no
@@ -216,23 +237,26 @@
       "mooncake_protocol" ($mc.protocol         | default "rdma")
       "num_workers"       ($mc.numSenderWorkers | default 10) }}
 {{- with $mc.deviceName }}{{ $mcExtra = set $mcExtra "device_name" . }}{{ end }}
-{{- $kvCfg = printf `{"kv_connector":"MooncakeConnector","kv_role":"kv_both","kv_connector_extra_config":%s}` ($mcExtra | mustToJson) }}
+{{- $pdKvCfg = printf `{"kv_connector":"MooncakeConnector","kv_role":"kv_both","kv_connector_extra_config":%s}` ($mcExtra | mustToJson) }}
 {{- else }}
 {{- $backendsJson := "[" }}{{ range $i, $b := $nixlBackends }}{{ if $i }}{{ $backendsJson = printf "%s," $backendsJson }}{{ end }}{{ $backendsJson = printf "%s%q" $backendsJson $b }}{{ end }}{{ $backendsJson = printf "%s]" $backendsJson }}
-{{- $kvCfg = printf `{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"backends":%s,"http_port":%d}}` $backendsJson $nixlHttpPort }}
+{{- $pdKvCfg = printf `{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"backends":%s,"http_port":%d}}` $backendsJson $nixlHttpPort }}
 {{- end }}
-{{- /* pd.localKVOffload wraps the chart-derived PD connector in MultiConnector
-       and appends the L2 store connector. The store connector's extra_config
-       is hard-coded ({load_async,lookup_async}=true -- the only values the
-       reference deploy has been validated on); the connector's own knobs are
-       snake_case wire keys and the chart deliberately does not enumerate
-       them. Emitted as ONE --kv-transfer-config; the user's own flag in
-       extraArgs is forbidden by pd-guards when this is on, so the chart's
-       flag is the only one. */}}
-{{- if and $root.Values.pd.localKVOffload.enabled (eq ($root.Values.pd.localKVOffload.backend | default "") "mooncakeStore") }}
-{{- $kvCfg = printf `{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[%s,{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true}}]}}` $kvCfg }}
 {{- end }}
-{{- $flags = append $flags (printf "--kv-transfer-config=%s" $kvCfg) }}
+{{- /* The store connector entry, plain. Emitted solo for pd-less offload,
+       or wrapped with the PD connector in MultiConnector for pd+offload. */}}
+{{- $l2 := and $root.Values.localKVOffload.enabled (eq ($root.Values.localKVOffload.backend | default "") "mooncakeStore") }}
+{{- $storeKvCfg := `{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true}}` }}
+{{- if or $pdRole $l2 }}
+{{- $out := $pdKvCfg }}
+{{- if $l2 }}
+{{- if $pdRole }}
+{{- $out = printf `{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[%s,%s]}}` $pdKvCfg $storeKvCfg }}
+{{- else }}
+{{- $out = $storeKvCfg }}
+{{- end }}
+{{- end }}
+{{- $flags = append $flags (printf "--kv-transfer-config=%s" $out) }}
 {{- end }}
 {{- /* toString, so a YAML-typed entry (`- 2` under `- --tensor-parallel-size`)
        reaches the pod as the string the API server requires rather than an int
@@ -265,6 +289,7 @@
       "hasModel" $hasModel
       "override" $override
       "expand" $expand
+      "l2" $l2
       "flags" $flags) -}}
 {{- end -}}
 
@@ -287,7 +312,12 @@
 {{- $pdRole := $e.pdRole }}
 {{- $worker := $e.worker }}
 {{- $serves := $e.serves }}
-{{- $l2 := and $pdRole (not .colocate) $root.Values.pd.localKVOffload.enabled (eq ($root.Values.pd.localKVOffload.backend | default "") "mooncakeStore") }}
+{{- /* Engine container-side L2 side-effects (env + volumeMount) come from
+       the identity dict, not re-derived here -- one derivation, one truth.
+       Gated on L2 being ON; the colocate render's merged pod bypasses
+       podSpec's volume plumbing entirely and mc-guards rejects the
+       combination upstream, so this branch never fires under colocate. */}}
+{{- $l2 := $e.l2 }}
 {{- $oc := $e.oc }}
 {{- $pname := $e.pname }}
 {{- $hwPort := $e.hwPort }}
@@ -637,11 +667,6 @@
 {{- if eq (.mountPath | default "") "/dev/shm" }}{{ $userShm = true }}{{ end }}
 {{- end }}
 {{- $shmOn := and $root.Values.shm.enabled (not $userShm) }}
-{{- /* L2 offload: the store.json ConfigMap belongs on every engine pod
-       (leader + worker, both pd roles). The workers' GPUs hold the rest of
-       the model's KV, and the mooncake transfer engine spans every rank's
-       node at the store level, not just the leader's. */}}
-{{- $l2v := and $root.Values.pd.enabled (not $root.Values.pd.colocate) $root.Values.pd.localKVOffload.enabled (eq ($root.Values.pd.localKVOffload.backend | default "") "mooncakeStore") }}
 {{- /* A values file may already use the name this chart gives its /dev/shm
        volume, for something else entirely. Two volumes cannot share a name, so
        say so here rather than let the API server reject the pod with a message
@@ -665,6 +690,7 @@
 {{- $worker := $e.worker }}
 {{- $serves := $e.serves }}
 {{- $hasModel := $e.hasModel }}
+{{- $l2 := $e.l2 }}
 {{- $preStop := $root.Values.lifecycle.preStop }}
 {{- /* Shutdown budget: preStop + vLLM finishing up after SIGTERM, checked by
        vllm.shutdownBudget. Workers get their own, because they drain nothing
@@ -765,7 +791,7 @@ containers:
        never makes it to podSpec (it renders merged from pd-colocate.yaml),
        so $multi and pd's A/B shape both still want hostNetwork when
        hostNetwork is set in values. */}}
-{{- if or $hasModel $hangVol $root.Values.volumes $shmOn $l2v }}
+{{- if or $hasModel $hangVol $root.Values.volumes $shmOn $l2 }}
 volumes:
 {{- if $shmOn }}
 - name: dshm
@@ -784,7 +810,7 @@ volumes:
   configMap:
     name: {{ $root.Release.Name }}-hang-watcher
 {{- end }}
-{{- if $l2v }}
+{{- if $l2 }}
 - name: mc-store
   configMap:
     name: {{ include "vllm.fullname" $root }}-mc-store-config

@@ -7,7 +7,7 @@
        chart reuses .Values.image.{repository,tag} verbatm. HA / ordering
        gates / quorum are out of scope -- if they become necessary, the
        binary's -cluster_id flag is the layer to fan out at. */ -}}
-{{- if and .Values.pd.enabled (not .Values.pd.colocate) .Values.pd.localKVOffload.enabled (eq (.Values.pd.localKVOffload.backend | default "") "mooncakeStore") -}}
+{{- if and (not .Values.pd.colocate) .Values.localKVOffload.enabled (eq (.Values.localKVOffload.backend | default "") "mooncakeStore") -}}
 {{- $fullname := include "vllm.fullname" . -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
       - name: mooncake-master
-        image: "{{ .Values.pd.localKVOffload.mooncakeStore.master.imageOverride.repository | default .Values.image.repository }}:{{ .Values.pd.localKVOffload.mooncakeStore.master.imageOverride.tag | default .Values.image.tag }}"
+        image: "{{ .Values.localKVOffload.mooncakeStore.master.imageOverride.repository | default .Values.image.repository }}:{{ .Values.localKVOffload.mooncakeStore.master.imageOverride.tag | default .Values.image.tag }}"
         imagePullPolicy: IfNotPresent
         command: ["mooncake_master"]
         args:

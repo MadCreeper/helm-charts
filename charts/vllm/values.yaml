@@ -334,93 +334,97 @@ pd:
     #  - if an engine pod restarts with a new IP, the router keeps
     #    stale argv; staleness self-healing is a separate PR.
 
-  localKVOffload:
-    # L2 KV offload: spill KV from GPU to a co-deployed store, scoped to the
-    # node's own RAM (a future federated section would cover cross-node
-    # KV sharing). Off by default.
+localKVOffload:
+  # Local KV offload ("L2"): spill KV from GPU to a co-deployed store on the
+  # same node, scoped to the node's own RAM (a future federated section
+  # would cover cross-node KV sharing). Off by default.
+  #
+  # ORTHOGONAL to pd: the store connector is its own engine feature. The
+  # three legal combinations are all first-class:
+  #
+  #   pd.enabled=false, localKVOffload.enabled=true    -- a single engine
+  #     serves its local requests and spills KV to the node's RAM tier.
+  #     --kv-transfer-config is MooncakeStoreConnector alone (no
+  #     MultiConnector; nothing else to wrap).
+  #
+  #   pd.enabled=true,  localKVOffload.enabled=true    -- PD + L2. The
+  #     chart's PD connector (nixl or mooncake, per pd.transferBackend)
+  #     and MooncakeStoreConnector are wrapped inside ONE MultiConnector
+  #     emitted as a single --kv-transfer-config per engine.
+  #
+  #   pd.enabled=true,  localKVOffload.enabled=false   -- today's plain PD
+  #     shape: one single-connector --kv-transfer-config (unchanged).
+  #
+  # Validated PD pairing is transferBackend=mooncake. Combining
+  # transferBackend=nixl with the offload produces syntactically valid
+  # MultiConnector JSON but has NOT been runtime-validated; treat it as an
+  # experiment, not a supported shape.
+  #
+  # When enabled, the chart:
+  #   - renders <fullname>-mc-store-config ConfigMap and mounts it at
+  #     /etc/mooncake on the engine pod(s) -- for pd A/B: every pd role's
+  #     leader AND worker (the workers' GPUs hold the rest of the model's
+  #     KV, not just the leader's); for LWS / single-pod: every pod of
+  #     the group.
+  #   - sets MOONCAKE_CONFIG_PATH=/etc/mooncake/store.json in the engine
+  #     env. The user's own top-level env with the same name wins
+  #     (Kubernetes env is last-wins) -- set it yourself only to point the
+  #     store at a path the chart did not render, and own the result.
+  #   - renders <fullname>-mc-master Deployment (replicas=1, Recreate) +
+  #     a matching ClusterIP Service as the store's metaserver. Single
+  #     replica is deliberate: contact pattern is once-per-request-batch,
+  #     and the master is Ready ~1s after start vs ~190s to the engines'
+  #     first contact. Scale-by-replicas is a punt until the connector's
+  #     HA story is exercised.
+  #
+  # A user-set --kv-transfer-config in any extraArgs with the offload on
+  # is a render-time fail: the chart owns the flag.
+  #
+  # Federated KV sharing (multiple releases coordinating one store) is
+  # out of scope -- a separate values section would expose that.
+  enabled: false
+  # Only 'mooncakeStore' exists today. When a second backend lands it gets
+  # its own sibling block keyed off this enum; keep this name matching the
+  # connector's class suffix (MooncakeStoreConnector).
+  backend: mooncakeStore
+  mooncakeStore:
+    # The values below map 1:1 onto wire keys in store.json; everything else
+    # in that JSON is chart-hard-coded because the connector's architecture
+    # decisions (mode=embedded, metadata_server=P2PHANDSHAKE, protocol=rdma,
+    # device_name="") are not signals the operator should tune. The
+    # kv_connector_extra_config of the store connector itself
+    # (load_async/lookup_async=true) is also hard-coded -- those are the
+    # only values the reference deploy has been validated on.
     #
-    # Validated pairing: transferBackend=mooncake + localKVOffload.enabled
-    # (the reference deploy shape -- MooncakeConnector PD + MooncakeStoreConnector
-    # L2 inside one MultiConnector). Combining with transferBackend=nixl
-    # produces syntactically valid JSON ([NixlConnector, MooncakeStoreConnector])
-    # but has NOT been runtime-validated; treat it as an experiment, not a
-    # supported shape.
+    # wire: global_segment_size. Per-engine spill budget in bytes, total
+    # across the GPUs on the engine's node (so at TP8 this is ~per-node).
+    # The reference (8-GPU TP8+PP2 at 1M ctx on a 6000D fleet) uses 100GB;
+    # keep sum(model's per-node KV + slop) under this and under shm.sizeLimit.
+    globalSegmentSize: "100GB"
+    # wire: local_buffer_size. Per-engine RDMA registration buffer. The
+    # reference allocates 4GB per engine.
+    localBufferSize: "4GB"
+    # wire: enable_offload. Deeper spill from RAM to local disk. Off in the
+    # reference -- the L2 tier is RAM-resident.
+    enableOffload: false
+    # mooncake_master runs out of a DIFFERENT binary than vllm serve, but
+    # the same image carries both (the vendor bundles mooncake_master in
+    # /usr/local/bin of the vllm image). Default the master to the engine's
+    # own image tag, because the binary's wire protocol has to match the
+    # connector the engines load.
     #
-    # When enabled:
-    #   - the chart renders each pd role's --kv-transfer-config as ONE
-    #     MultiConnector wrapping [the chart-derived PD connector,
-    #     MooncakeStoreConnector]. The argc/argv in the engine's argv is
-    #     identical for both roles modulo the PD connector's per-role
-    #     httpPort -- there is deliberately no per-role switch. The user
-    #     must NOT place a --kv-transfer-config of their own in extraArgs;
-    #     pd-guards fails the render (the wrapper is chart-owned).
-    #   - the store's JSON config is rendered into <fullname>-mc-store-config
-    #     ConfigMap and mounted at /etc/mooncake on every engine pod
-    #     (leader and worker, both roles; the workers' GPUs hold the rest
-    #     of the model's KV).
-    #   - the chart sets MOONCAKE_CONFIG_PATH=/etc/mooncake/store.json in
-    #     the engine env. The user's top-level env still wins if both are
-    #     present (Kubernetes env is last-wins).
-    #   - <fullname>-mc-master (Deployment, replicas=1) + matching ClusterIP
-    #     Service are rendered as the store's metaserver. Deliberately no
-    #     HA in v1: the store connector contacts the master once per
-    #     request batch, and the master's own measured Ready latency is
-    #     ~1s vs ~190s to the engines' first contact, so a single pod is
-    #     sufficient. Scale-by-replicas is a deliberate punt until the
-    #     connector's HA story is exercised.
-    #
-    # MOONCAKE_CONFIG_PATH: the chart sets this to /etc/mooncake/store.json
-    # in the engine env when enabled. A user env entry of the same name wins
-    # (Kubernetes env is last-wins) -- set it yourself only if pointing the
-    # store at a path the chart did not render, and own the result.
-    #
-    # Federated KV sharing (multiple releases coordinating one store) is
-    # out of scope -- a separate values section would expose that.
-    enabled: false
-    # Only 'mooncakeStore' exists today. When a second backend lands it
-    # gets its own sibling block keyed off this enum; keep this name
-    # matching the connector's class suffix (MooncakeStoreConnector).
-    backend: mooncakeStore
-    mooncakeStore:
-      # The values below map 1:1 onto wire keys in store.json; everything
-      # else in that JSON is chart-hard-coded because the connector's
-      # architecture decisions (mode=embedded, metadata_server=P2PHANDSHAKE,
-      # protocol=rdma, device_name="") are not signals the operator should
-      # tune. The kv_connector_extra_config of the store connector itself
-      # (load_async/lookup_async=true) is also hard-coded -- those are the
-      # only values the reference deploy has been validated on.
-      #
-      # wire: global_segment_size. Per-engine spill budget in bytes,
-      # total across the GPUs on the engine's node (so at TP8 this is
-      # ~per-node). The reference (8-GPU TP8+PP2 at 1M ctx on a 6000D
-      # fleet) uses 100GB; keep sum(model's per-node KV + slop) under
-      # this and under shm.sizeLimit.
-      globalSegmentSize: "100GB"
-      # wire: local_buffer_size. Per-engine RDMA registration buffer. The
-      # reference allocates 4GB per engine.
-      localBufferSize: "4GB"
-      # wire: enable_offload. Deeper spill from RAM to local disk. Off in
-      # the reference -- the L2 tier is RAM-resident.
-      enableOffload: false
-      # mooncake_master runs out of a DIFFERENT binary than vllm serve, but
-      # the same image carries both (the vendor bundles mooncake_master in
-      # /usr/local/bin of the vllm image). Default the master to the
-      # engine's own image tag, because the binary's wire protocol has to
-      # match the connector the engines load.
-      #
-      # imageOverride is the DEBUG escape hatch, not the upgrade path: a
-      # master binary from a different vendor / release speaks the mooncake
-      # metaserver protocol with ITS OWN versioning, and there is no
-      # cross-version handshake. Mixing master's tag against the engines'
-      # tag is the classic way to see silent store-server misbehaviour (the
-      # engines log "store unavailable" with no wire-level error pointing at
-      # the version skew). If you must move one without the other, verify
-      # against the same-connector release notes first; otherwise bump
-      # them together.
-      master:
-        imageOverride:
-          repository: ""
-          tag: ""
+    # imageOverride is the DEBUG escape hatch, not the upgrade path: a
+    # master binary from a different vendor / release speaks the mooncake
+    # metaserver protocol with ITS OWN versioning, and there is no cross-
+    # version handshake. Mixing master's tag against the engines' tag is
+    # the classic way to see silent store-server misbehaviour (the engines
+    # log "store unavailable" with no wire-level error pointing at the
+    # version skew). If you must move one without the other, verify against
+    # the same-connector release notes first; otherwise bump them together.
+    master:
+      imageOverride:
+        repository: ""
+        tag: ""
 
 image:
   repository: "vllm/vllm-openai"
