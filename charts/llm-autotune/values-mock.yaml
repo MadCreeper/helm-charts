@@ -1,9 +1,8 @@
 # AutoTune on its own, with a fake benchmark platform in place of LLMBench.
 # Layer it on values-demo.yaml:
 #
-#   helm install autotune deploy/helm/llm-autotune \
-#     -f deploy/helm/llm-autotune/values-demo.yaml \
-#     -f deploy/helm/llm-autotune/values-mock.yaml \
+#   helm install autotune modelsphere/llm-autotune \
+#     -f values-demo.yaml -f values-mock.yaml \
 #     --set jwtSecret=$(openssl rand -hex 32) --set adminPassword=...
 #
 # The fake probes the deployed endpoint, so a broken engine still fails the

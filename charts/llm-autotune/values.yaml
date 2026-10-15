@@ -2,11 +2,15 @@
 # datastores. Everything below has a working default except `jwtSecret`, which
 # you must set, and `adminPassword`, without which no account is created.
 #
-#   helm install autotune deploy/helm/llm-autotune \
+#   helm install autotune modelsphere/llm-autotune \
 #     --set jwtSecret=$(openssl rand -hex 32) --set adminPassword=...
 #
 # deploy/quickstart.sh installs it next to LLMBench in one command. For a
 # try-out on a cluster without GPUs, add `-f values-demo.yaml` (deploy/demo.sh).
+#
+# Paths named in this chart's comments -- deploy/*, scripts/*, docs/* -- are in
+# the llm-autotune project repository (`home` in Chart.yaml), which is where the
+# chart is maintained and copied here from. They are not paths in this one.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -112,7 +116,11 @@ runLogs:
 
 postgresql:
   enabled: true                # false = bring your own, via externalDatabase
-  image: postgres:16-alpine
+  # The host is named, so the address is complete wherever it is read: tooling
+  # that collects images from a render (offline bundles, mirror configuration)
+  # has to special-case a bare `postgres:16-alpine` to know it means docker.io.
+  # The llm-bench chart names it too.
+  image: docker.io/library/postgres:16-alpine
   user: autotune
   database: autotune
   password: autotune           # change it, or use existingSecret below

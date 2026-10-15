@@ -1,3 +1,7 @@
+# Paths named in this chart's comments -- docs/*, scripts/* -- are in the
+# llm-bench project repository (`home` in Chart.yaml), which is where the chart
+# is maintained and copied here from. They are not paths in this one.
+#
 # ---------------------------------------------------------------------------
 # Image settings
 # ---------------------------------------------------------------------------
